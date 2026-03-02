@@ -1,0 +1,14 @@
+{
+  "name": "travel-agent",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:web": "pnpm --dir apps/web dev",
+    "build:web": "pnpm --dir apps/web build",
+    "dev:backend": "cd backend && uv run uvicorn app.main:app --reload",
+    "check:python": "python3 -m compileall backend/app"
+  }
+}

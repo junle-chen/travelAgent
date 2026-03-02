@@ -1,0 +1,107 @@
+export type ViewState =
+  | 'idle'
+  | 'submitting'
+  | 'needs_clarification'
+  | 'itinerary_ready'
+  | 'partial_itinerary_with_warnings'
+  | 'error_recoverable';
+
+export type ModelId = 'gpt-5.1-chat' | 'gemini-3-flash-preview' | 'deepseek-v3.2';
+
+export interface ModelInfo {
+  model_id: ModelId;
+  label: string;
+  env_configured: boolean;
+  supports_override: boolean;
+  provider: string;
+}
+
+export interface ModelsResponse {
+  models: ModelInfo[];
+  default_model_id: ModelId;
+  mock_model_fallback_enabled: boolean;
+}
+
+export interface ClarificationQuestion {
+  id: string;
+  label: string;
+  question: string;
+  suggestions: string[];
+}
+
+export interface ProviderWarning {
+  source: string;
+  message: string;
+  severity: 'low' | 'medium' | 'high';
+}
+
+export interface TimelineEvent {
+  id: string;
+  start_time: string;
+  end_time: string;
+  title: string;
+  location: string;
+  travel_time_from_previous: string;
+  cost_estimate?: string | null;
+  description: string;
+  image_url?: string | null;
+  risk_flags: string[];
+}
+
+export interface DayPlan {
+  day_index: number;
+  title: string;
+  theme: string;
+  events: TimelineEvent[];
+}
+
+export interface TripState {
+  trip_id: string;
+  view_state: ViewState;
+  selected_model_id: ModelId;
+  model_source: 'request' | 'env' | 'mock';
+  query: string;
+  plan_summary: {
+    headline: string;
+    body: string;
+    highlights: string[];
+  };
+  clarification_questions: ClarificationQuestion[];
+  timeline_days: DayPlan[];
+  budget_summary: {
+    trip_total_estimate: string;
+    current_day_estimate: string;
+    budget_status: 'on_track' | 'watch' | 'over';
+  };
+  memory_summary: {
+    fixed_anchors: string[];
+    open_constraints: string[];
+    user_preferences: string[];
+    last_selected_model: ModelId;
+    route_mode: string;
+  };
+  provider_warnings: ProviderWarning[];
+  conflict_warnings: ProviderWarning[];
+  map_preview: {
+    route_label: string;
+    stops: string[];
+    total_transit_time: string;
+    image_references: Array<{
+      title: string;
+      image_url?: string | null;
+      source_url?: string | null;
+    }>;
+  };
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TripResponse {
+  trip: TripState;
+}
+
+export interface ModelConfigRequest {
+  model_id: ModelId;
+  api_key: string | null;
+  base_url: string | null;
+}
