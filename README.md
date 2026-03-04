@@ -8,11 +8,57 @@ Interactive travel planning application with:
 - search-augmented itinerary generation using `SerpApi`, `Serper`, and `Amap`
 - optional LangChain prompt composition layer (`langchain-core`) while keeping the existing model transport client
 
+## Demo
+### Front-end input interface
+<img src="images/image.png" width="600" />
+
+It allows users to input their travel needs and then generates travel plans through two modes: 
+- Direct Mode: quickly generates a draft itinerary directly. 
+- Planning Mode: first inquires with the user for more information, and then generates a more reliable travel plan.
+
+It support different models
+- GPT-5.1-chat
+- Gemini-3-flash-preview
+- Deepseek-v3.2
+
+### Backend interface
+#### Overview
+<img src="images/image-1.png" width="600" />
+
+#### Specific daily plans.
+<img src="images/image-2.png" width="600" />
+
+- Itineraries for each time period
+- Scenery corresponding to POIs
+
+#### Daily route map.
+<img src="images/image-3.png" width="600" />
+
+#### Budget and memory.
+<img src="images/image-4.png" width="600" />
+
+#### Supplementary search results
+<img src="images/image-5.png" width="600" />
+
+- Hotel information
+- POI information
+
+#### Other VISUALS
+<img src="images/image-6.png" width="600" />
+
+- Other POI pictures
+
+### MOre travel blog links
+<img src="images/image-7.png" width="600" />
+
+### Static HTML Export
+You can view a pre-generated interactive travel plan here: [Travel Agent Demo](./images/Travel%20Agent.html) (Download and open in browser)
+
 ## What This Project Does
 
 The app accepts a free-form travel request such as:
 
-- `Plan a 3-day Beijing trip from Shanghai, focus on famous landmarks and skip routine meals`
+- `2 People, plan a 3-day Beijing trip from Shanghai, focus on famous landmarks`
 
 The backend then:
 
@@ -298,18 +344,3 @@ If the response still feels slow, the remaining dominant cost is usually:
 - image search latency
 - the selected LLM response time
 
-## Current Limitations
-
-- search result quality still depends on external engines
-- image quality is better than before, but still depends on search precision
-- image enrichment runs for scenic events across all days, but still depends on successful search matches
-- `LangChain` is currently used for prompt composition, not a full LangGraph agent runtime
-- the real browser Amap map requires `VITE_AMAP_KEY`; otherwise it falls back to SVG
-- some destinations will have better Amap POI coverage than others
-
-## Recommended Next Steps
-
-1. **Structured Data Ranking**: Add destination-specific POI ranking heuristics before the refinement pass to further improve accuracy.
-2. **Persistent Search Cache**: Move the `lru_cache` to a persistent store (Redis/SQLite) so planning speed remains high even after server restarts.
-3. **Advanced Graph Logic**: Upgrade LangChain usage from prompt composition to more complex branching logic within the LangGraph nodes.
-4. **Interactive Map Editing**: Support manually dragging route points or excluding specific POIs directly from the Amap interface.
