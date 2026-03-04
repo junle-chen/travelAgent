@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { fetchModels, createTrip, postTripMessage } from '../lib/api';
-import type { ModelId, ModelInfo, TripState, ViewState } from '../lib/models';
+import type { InteractionMode, ModelId, ModelInfo, TripState, ViewState } from '../lib/models';
 import { ClarificationPanel } from '../components/ClarificationPanel';
 import { HeroComposer } from '../components/HeroComposer';
 import { ItineraryWorkspace } from '../components/ItineraryWorkspace';
@@ -34,6 +34,7 @@ const FALLBACK_MODELS: ModelInfo[] = [
 export function TripPlannerPage() {
   const [models, setModels] = useState<ModelInfo[]>(FALLBACK_MODELS);
   const [selectedModelId, setSelectedModelId] = useState<ModelId>('gpt-5.1-chat');
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>('direct');
   const [query, setQuery] = useState('');
   const [trip, setTrip] = useState<TripState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -65,7 +66,7 @@ export function TripPlannerPage() {
     setError(null);
     setViewState('submitting');
     try {
-      const response = await createTrip(query.trim(), modelConfig);
+      const response = await createTrip(query.trim(), modelConfig, interactionMode);
       setTrip(response.trip);
       setViewState(response.trip.view_state);
       setQuery('');
@@ -89,7 +90,7 @@ export function TripPlannerPage() {
     setLoading(true);
     setError(null);
     try {
-      const response = await postTripMessage(trip.trip_id, nextMessage, modelConfig);
+      const response = await postTripMessage(trip.trip_id, nextMessage, modelConfig, interactionMode);
       setTrip(response.trip);
       setViewState(response.trip.view_state);
       setQuery('');
@@ -109,25 +110,29 @@ export function TripPlannerPage() {
         <HeroComposer
           query={query}
           selectedModelId={selectedModelId}
+          interactionMode={interactionMode}
           models={models}
           loading={loading}
           onQueryChange={setQuery}
           onModelChange={setSelectedModelId}
+          onModeChange={setInteractionMode}
           onSubmit={() => void submitNewTrip()}
         />
       ) : (
         <StickyFollowupComposer
           query={query}
           selectedModelId={selectedModelId}
+          interactionMode={interactionMode}
           models={models}
           loading={loading}
           onQueryChange={setQuery}
           onModelChange={setSelectedModelId}
+          onModeChange={setInteractionMode}
           onSubmit={() => void submitFollowup()}
         />
       )}
 
-      <section className="mx-auto max-w-6xl px-4 pb-16">
+      <section className="mx-auto max-w-7xl px-4 pb-16">
         {error ? (
           <div className="mb-6 rounded-3xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
             {error}
@@ -146,6 +151,7 @@ export function TripPlannerPage() {
           <ClarificationPanel
             questions={trip.clarification_questions}
             loading={loading}
+            interactionMode={trip.interaction_mode}
             onSubmit={(message) => void submitFollowup(message)}
           />
         ) : null}

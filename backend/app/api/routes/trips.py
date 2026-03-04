@@ -24,7 +24,7 @@ def create_trip(payload: CreateTripRequest) -> TripResponse:
     except ModelResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
-        trip = build_trip_state(payload.query, resolved, model_client=model_client)
+        trip = build_trip_state(payload.query, resolved, interaction_mode=payload.interaction_mode, model_client=model_client)
     except ModelApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     database.save_trip(trip, payload.query)
@@ -50,7 +50,7 @@ def post_message(trip_id: str, payload: TripMessageRequest) -> TripResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     combined_query = f"{existing.query}\n{payload.message}"
     try:
-        trip = build_trip_state(combined_query, resolved, existing_trip_id=trip_id, model_client=model_client)
+        trip = build_trip_state(combined_query, resolved, interaction_mode=payload.interaction_mode, existing_trip_id=trip_id, model_client=model_client)
     except ModelApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     database.save_trip(trip, payload.message)

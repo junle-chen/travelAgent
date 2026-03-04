@@ -14,6 +14,7 @@ ViewState = Literal[
     "partial_itinerary_with_warnings",
     "error_recoverable",
 ]
+InteractionMode = Literal["direct", "planning"]
 
 
 class ClarificationQuestion(BaseModel):
@@ -33,7 +34,15 @@ class TimelineEvent(BaseModel):
     cost_estimate: str | None = None
     description: str
     image_url: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     risk_flags: list[str] = Field(default_factory=list)
+
+
+class RoutePoint(BaseModel):
+    label: str
+    latitude: float
+    longitude: float
 
 
 class DayPlan(BaseModel):
@@ -41,6 +50,7 @@ class DayPlan(BaseModel):
     title: str
     theme: str
     events: list[TimelineEvent]
+    route_points: list[RoutePoint] = Field(default_factory=list)
 
 
 class PlanSummary(BaseModel):
@@ -76,9 +86,27 @@ class MapPreview(BaseModel):
     image_references: list[VisualReference] = Field(default_factory=list)
 
 
+class TravelLogistics(BaseModel):
+    origin: str = "Your city"
+    destination: str = "Custom Destination"
+    travelers: int = 1
+    outbound_transport: str = "Flight to the destination"
+    return_transport: str = "Flight back home"
+    outbound_schedule: str = "Schedule pending"
+    return_schedule: str = "Schedule pending"
+    hotel_name: str = "Central Hotel"
+
+
+class ReferenceLink(BaseModel):
+    title: str
+    url: str
+    label: str
+
+
 class TripState(BaseModel):
     trip_id: str
     view_state: ViewState
+    interaction_mode: InteractionMode = "direct"
     selected_model_id: ModelId
     model_source: ModelSource
     query: str
@@ -90,5 +118,8 @@ class TripState(BaseModel):
     provider_warnings: list[ProviderWarning] = Field(default_factory=list)
     conflict_warnings: list[ProviderWarning] = Field(default_factory=list)
     map_preview: MapPreview
+    travel_logistics: TravelLogistics = Field(default_factory=TravelLogistics)
+    reference_links: list[ReferenceLink] = Field(default_factory=list)
+    planning_trace: list[str] = Field(default_factory=list)
     created_at: str
     updated_at: str

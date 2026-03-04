@@ -3,6 +3,7 @@ node_modules/
 apps/web/node_modules/
 backend/.venv/
 backend/.env
+apps/web/.env
 __pycache__/
 *.pyc
 dist/

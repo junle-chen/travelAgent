@@ -7,6 +7,7 @@ export type ViewState =
   | 'error_recoverable';
 
 export type ModelId = 'gpt-5.1-chat' | 'gemini-3-flash-preview' | 'deepseek-v3.2';
+export type InteractionMode = 'direct' | 'planning';
 
 export interface ModelInfo {
   model_id: ModelId;
@@ -45,6 +46,8 @@ export interface TimelineEvent {
   cost_estimate?: string | null;
   description: string;
   image_url?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   risk_flags: string[];
 }
 
@@ -53,11 +56,17 @@ export interface DayPlan {
   title: string;
   theme: string;
   events: TimelineEvent[];
+  route_points: Array<{
+    label: string;
+    latitude: number;
+    longitude: number;
+  }>;
 }
 
 export interface TripState {
   trip_id: string;
   view_state: ViewState;
+  interaction_mode: InteractionMode;
   selected_model_id: ModelId;
   model_source: 'request' | 'env' | 'mock';
   query: string;
@@ -92,6 +101,21 @@ export interface TripState {
       source_url?: string | null;
     }>;
   };
+  travel_logistics: {
+    origin: string;
+    destination: string;
+    travelers: number;
+    outbound_transport: string;
+    return_transport: string;
+    outbound_schedule: string;
+    return_schedule: string;
+    hotel_name: string;
+  };
+  reference_links: Array<{
+    title: string;
+    url: string;
+    label: string;
+  }>;
   created_at: string;
   updated_at: string;
 }

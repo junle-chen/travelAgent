@@ -7,7 +7,10 @@ dependencies = [
   "fastapi>=0.115.0",
   "uvicorn>=0.34.0",
   "pydantic>=2.10.0",
-  "python-dotenv>=1.0.1"
+  "python-dotenv>=1.0.1",
+  "langchain-core>=0.3.0",
+  "langchain>=0.3.0",
+  "langsmith>=0.1.0"
 ]
 
 [tool.uv]

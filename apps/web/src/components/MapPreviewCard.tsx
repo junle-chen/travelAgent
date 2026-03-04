@@ -1,7 +1,27 @@
+import { useState } from 'react';
+
 import type { TripState } from '../lib/models';
 
 interface MapPreviewCardProps {
   trip: TripState;
+}
+
+const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=1200&q=80';
+
+function VisualCard({ title, imageUrl, sourceUrl }: { title: string; imageUrl?: string | null; sourceUrl?: string | null }) {
+  const [src, setSrc] = useState(imageUrl || FALLBACK_IMAGE);
+
+  return (
+    <a
+      href={sourceUrl || undefined}
+      target={sourceUrl ? '_blank' : undefined}
+      rel={sourceUrl ? 'noreferrer' : undefined}
+      className="block overflow-hidden rounded-3xl border border-slate-200 bg-slate-50"
+    >
+      <img src={src} alt={title} className="h-32 w-full object-cover" onError={() => setSrc(FALLBACK_IMAGE)} />
+      <div className="px-3 py-2 text-sm font-semibold text-ink">{title}</div>
+    </a>
+  );
 }
 
 export function MapPreviewCard({ trip }: MapPreviewCardProps) {
@@ -26,22 +46,12 @@ export function MapPreviewCard({ trip }: MapPreviewCardProps) {
       <div className="mt-5 space-y-3">
         {references.length ? (
           references.map((reference) => (
-            <a
+            <VisualCard
               key={`${reference.title}-${reference.image_url ?? 'none'}`}
-              href={reference.source_url ?? undefined}
-              target={reference.source_url ? '_blank' : undefined}
-              rel={reference.source_url ? 'noreferrer' : undefined}
-              className="block overflow-hidden rounded-3xl border border-slate-200 bg-slate-50"
-            >
-              {reference.image_url ? (
-                <img src={reference.image_url} alt={reference.title} className="h-32 w-full object-cover" />
-              ) : (
-                <div className="flex h-32 items-center justify-center text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                  No image
-                </div>
-              )}
-              <div className="px-3 py-2 text-sm font-semibold text-ink">{reference.title}</div>
-            </a>
+              title={reference.title}
+              imageUrl={reference.image_url}
+              sourceUrl={reference.source_url}
+            />
           ))
         ) : (
           <div className="rounded-3xl border border-dashed border-slate-200 px-4 py-5 text-sm text-slate-500">

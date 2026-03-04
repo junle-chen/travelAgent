@@ -6,6 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes.health import router as health_router
 from app.api.routes.models import router as models_router
 from app.api.routes.trips import router as trips_router
+from app.core.logging import configure_logging
+
+configure_logging()
 
 app = FastAPI(title="Travel Agent API", version="0.1.0")
 app.add_middleware(

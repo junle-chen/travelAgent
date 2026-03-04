@@ -7,7 +7,10 @@ import { DayTabs } from './DayTabs';
 import { ItineraryHeader } from './ItineraryHeader';
 import { MapPreviewCard } from './MapPreviewCard';
 import { MemorySummaryPanel } from './MemorySummaryPanel';
+import { ReferenceLinksPanel } from './ReferenceLinksPanel';
 import { Timeline } from './Timeline';
+import { TravelLogisticsCard } from './TravelLogisticsCard';
+import { TravelSearchPanel } from './TravelSearchPanel';
 
 interface ItineraryWorkspaceProps {
   trip: TripState;
@@ -27,14 +30,17 @@ export function ItineraryWorkspace({ trip }: ItineraryWorkspaceProps) {
     <div className="space-y-6">
       <ItineraryHeader trip={trip} />
       <ConflictBanner warnings={warnings} />
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
-        <div className="space-y-4">
+      <TravelLogisticsCard trip={trip} />
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+        <div className="space-y-4 overflow-hidden">
           <DayTabs days={trip.timeline_days} activeDay={day.day_index} onChange={setActiveDay} />
           <Timeline day={day} />
+          <ReferenceLinksPanel trip={trip} />
         </div>
         <div className="space-y-4">
           <BudgetCounter trip={trip} />
           <MemorySummaryPanel trip={trip} />
+          <TravelSearchPanel trip={trip} />
           <MapPreviewCard trip={trip} />
         </div>
       </div>

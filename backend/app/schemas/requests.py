@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.schemas.providers import ModelConfigRequest
 
+InteractionMode = Literal["direct", "planning"]
+
 
 class CreateTripRequest(BaseModel):
     query: str = Field(min_length=1)
+    interaction_mode: InteractionMode = "direct"
     model_request: ModelConfigRequest = Field(
         default_factory=ModelConfigRequest,
         validation_alias="model_config",
@@ -16,6 +21,7 @@ class CreateTripRequest(BaseModel):
 
 class TripMessageRequest(BaseModel):
     message: str = Field(min_length=1)
+    interaction_mode: InteractionMode = "direct"
     model_request: ModelConfigRequest = Field(
         default_factory=ModelConfigRequest,
         validation_alias="model_config",
