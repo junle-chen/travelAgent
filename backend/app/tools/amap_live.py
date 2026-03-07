@@ -50,6 +50,43 @@ class AmapTravelService:
         results = self._search(city, keywords, config.api_key, offset=1)
         return results[0] if results else None
 
+    @lru_cache(maxsize=128)
+    def geocode_city(self, destination: str) -> tuple[float, float] | None:
+        config = self.settings.get_tool_env_config(["AMAP_API_KEY", "AMAP_MAPS_API_KEY"])
+        if not config.api_key or not destination.strip():
+            return None
+        logger.info("[amap] geocode_city destination=%s", destination)
+        url = (
+            "https://restapi.amap.com/v3/geocode/geo?"
+            + parse.urlencode(
+                {
+                    "key": config.api_key,
+                    "address": destination,
+                }
+            )
+        )
+        req = request.Request(url, headers={"Accept": "application/json", "User-Agent": "travel-agent/0.1"})
+        try:
+            with request.urlopen(req, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (error.URLError, json.JSONDecodeError) as exc:
+            logger.warning("[amap] geocode_city failed destination=%s error=%s", destination, exc)
+            return None
+        geocodes = payload.get("geocodes", [])
+        if not isinstance(geocodes, list) or not geocodes:
+            return None
+        first = geocodes[0]
+        if not isinstance(first, dict):
+            return None
+        location = str(first.get("location") or "").strip()
+        if "," not in location:
+            return None
+        lng_value, lat_value = location.split(",", 1)
+        try:
+            return (float(lng_value), float(lat_value))
+        except ValueError:
+            return None
+
     def build_route_points(self, points: list[tuple[float, float]]) -> list[tuple[float, float]]:
         config = self.settings.get_tool_env_config(["AMAP_API_KEY", "AMAP_MAPS_API_KEY"])
         if not config.api_key or len(points) < 2:

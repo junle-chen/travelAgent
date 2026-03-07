@@ -15,6 +15,6 @@ def get_models() -> ModelsResponse:
     resolver = ModelCredentialResolver(settings)
     return ModelsResponse(
         models=resolver.supported_models(),
-        default_model_id="gpt-5.1-chat",
+        default_model_id="gemini-3-flash-preview",
         mock_model_fallback_enabled=settings.enable_mock_model_fallback,
     )

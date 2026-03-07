@@ -48,4 +48,4 @@ class ProviderHealthSummary(BaseModel):
     tools: list[ToolProviderStatus]
     mock_model_fallback_enabled: bool
     mock_tool_fallback_enabled: bool
-    default_model_id: ModelId = Field(default="gpt-5.1-chat")
+    default_model_id: ModelId = Field(default="gemini-3-flash-preview")

@@ -133,7 +133,7 @@ export function DayRouteMap({ day }: DayRouteMapProps) {
     const polyline = points.map((point) => `${point.x},${point.y}`).join(' ');
 
     useEffect(() => {
-        if (!points.length) {
+        if (!stopMarkers.length && !points.length) {
             return undefined;
         }
         let disposed = false;
@@ -154,11 +154,16 @@ export function DayRouteMap({ day }: DayRouteMapProps) {
                 const validStopMarkers = stopMarkers.filter(
                     (p) => p.latitude !== 0 && p.longitude !== 0 && Math.abs(p.latitude) > 1 && Math.abs(p.longitude) > 1,
                 );
-                const centerMarker = validStopMarkers[0] ?? points[0];
+
+                // Determine center from stop markers or route points
+                const centerPoint = validStopMarkers[0] ?? points[0];
+                if (!centerPoint) {
+                    return;
+                }
 
                 mapInstance = new AMap.Map(mapContainer, {
                     zoom: 12,
-                    center: [centerMarker.longitude, centerMarker.latitude],
+                    center: [centerPoint.longitude, centerPoint.latitude],
                     resizeEnable: true,
                     viewMode: '2D',
                     zoomEnable: true,
@@ -168,21 +173,25 @@ export function DayRouteMap({ day }: DayRouteMapProps) {
                 });
                 const overlays: unknown[] = [];
 
-                const validRoutePoints = points.filter(
-                    (p) => p.latitude !== 0 && p.longitude !== 0 && Math.abs(p.latitude) > 1 && Math.abs(p.longitude) > 1,
-                );
-
-                if (validRoutePoints.length >= 2) {
+                // Draw polyline through stop markers (scenic spots in chronological order)
+                if (validStopMarkers.length >= 2) {
                     overlays.push(
                         new AMap.Polyline({
-                            path: validRoutePoints.map((point) => [point.longitude, point.latitude]),
+                            path: validStopMarkers.map((p) => [p.longitude, p.latitude]),
                             strokeColor: '#0f766e',
-                            strokeWeight: 5,
-                            strokeOpacity: 0.9,
+                            strokeWeight: 4,
+                            strokeOpacity: 0.85,
                             showDir: true,
+                            lineJoin: 'round',
+                            lineCap: 'round',
+                            isOutline: true,
+                            outlineColor: '#fff',
+                            borderWeight: 2,
                         }),
                     );
                 }
+
+                // Add numbered markers for each scenic stop
                 validStopMarkers.forEach((point, index) => {
                     const marker = new AMap.Marker({
                         position: [point.longitude, point.latitude],
@@ -268,15 +277,15 @@ export function DayRouteMap({ day }: DayRouteMapProps) {
                 )}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-                {markerPoints.slice(0, 8).map((point) => (
+                {stopMarkers.slice(0, 10).map((point, idx) => (
                     <button
-                        key={`${point.index}-${point.label}`}
+                        key={`${idx}-${point.title}`}
                         type="button"
-                        onClick={() => setActiveIndex(point.index)}
-                        className={`rounded-full px-3 py-1 text-xs font-semibold ${activeIndex === point.index ? 'bg-ink text-white' : 'bg-slate-100 text-slate-600'
+                        onClick={() => setActiveIndex(idx)}
+                        className={`rounded-full px-3 py-1 text-xs font-semibold ${activeIndex === idx ? 'bg-ink text-white' : 'bg-slate-100 text-slate-600'
                             }`}
                     >
-                        {point.label}
+                        {idx + 1}. {point.title}
                     </button>
                 ))}
             </div>

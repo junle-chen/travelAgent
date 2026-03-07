@@ -143,13 +143,80 @@ _WIDE_REGION_TOKENS = {
     "北疆", "南疆", "川西", "滇西",
 }
 
+_REGION_ANCHORS: dict[str, tuple[float, float]] = {
+    "新疆": (87.61, 43.82), # Urumqi
+    "北疆": (87.61, 43.82),
+    "南疆": (75.99, 39.47), # Kashgar
+    "xinjiang": (87.61, 43.82),
+    "西藏": (91.14, 29.64), # Lhasa
+    "tibet": (91.14, 29.64),
+    "内蒙古": (111.76, 40.84), # Hohhot
+    "inner mongolia": (111.76, 40.84),
+    "云南": (102.71, 25.04), # Kunming
+    "yunnan": (102.71, 25.04),
+    "四川": (104.06, 30.65), # Chengdu
+    "sichuan": (104.06, 30.65),
+    "青海": (101.77, 36.62), # Xining
+    "qinghai": (101.77, 36.62),
+    "甘肃": (103.82, 36.05), # Lanzhou
+    "gansu": (103.82, 36.05),
+    "黑龙江": (126.64, 45.75), # Harbin
+    "heilongjiang": (126.64, 45.75),
+    "广西": (108.36, 22.81), # Nanning
+    "guangxi": (108.36, 22.81),
+    "海南": (110.32, 20.03), # Haikou
+    "hainan": (110.32, 20.03),
+}
+
+_CITY_ANCHORS: dict[str, tuple[float, float]] = {
+    "beijing": (116.4074, 39.9042),
+    "shanghai": (121.4737, 31.2304),
+    "shenzhen": (114.0579, 22.5431),
+    "guangzhou": (113.2644, 23.1291),
+    "hangzhou": (120.1551, 30.2741),
+    "xiamen": (118.0894, 24.4798),
+    "chengdu": (104.0665, 30.5728),
+    "nanjing": (118.7969, 32.0603),
+    "suzhou": (120.5853, 31.2989),
+    "wuhan": (114.3054, 30.5931),
+    "changsha": (112.9388, 28.2282),
+    "hong kong": (114.1694, 22.3193),
+    "香港": (114.1694, 22.3193),
+    "北京": (116.4074, 39.9042),
+    "上海": (121.4737, 31.2304),
+    "深圳": (114.0579, 22.5431),
+    "广州": (113.2644, 23.1291),
+    "杭州": (120.1551, 30.2741),
+    "厦门": (118.0894, 24.4798),
+    "成都": (104.0665, 30.5728),
+}
+
+def _resolve_destination_anchor(destination: str) -> tuple[float, float] | None:
+    lowered = destination.lower().strip()
+    compact = lowered.replace(" ", "")
+    for key, anchor in _CITY_ANCHORS.items():
+        key_lower = key.lower()
+        if key_lower in lowered or key_lower.replace(" ", "") in compact:
+            return anchor
+    for key, anchor in _REGION_ANCHORS.items():
+        if key in lowered:
+            return anchor
+    if not AMAP_TRAVEL.available():
+        return None
+    geocoded = AMAP_TRAVEL.geocode_city(destination)
+    if geocoded:
+        return geocoded
+    poi = AMAP_TRAVEL.lookup_place(destination, destination)
+    if poi and poi.latitude is not None and poi.longitude is not None:
+        return (poi.longitude, poi.latitude)
+    return None
 
 def _destination_radius_km(destination: str) -> float:
     """Return max allowed distance (km) from destination center for POI validation."""
     lowered = destination.lower().strip()
     if any(token in lowered for token in _WIDE_REGION_TOKENS):
         return 1200.0
-    return 200.0
+    return 80.0
 
 
 def _validate_amap_poi(
@@ -556,10 +623,7 @@ def _apply_amap_candidates(
     candidates = prefetched_amap if prefetched_amap is not None else AMAP_TRAVEL.fetch_candidates(destination)
 
     # --- Resolve a destination anchor for POI validation ---
-    destination_anchor = AMAP_TRAVEL.lookup_place(destination, destination)
-    destination_center: tuple[float, float] | None = None
-    if destination_anchor and destination_anchor.latitude is not None and destination_anchor.longitude is not None:
-        destination_center = (destination_anchor.longitude, destination_anchor.latitude)
+    destination_center = _resolve_destination_anchor(destination)
     max_radius = _destination_radius_km(destination)
 
     # --- Filter Amap POIs to only those near the destination ---
@@ -641,14 +705,25 @@ def _apply_amap_candidates(
 def _hydrate_event_geocodes(destination: str, timeline_days: list[DayPlan], logistics: TravelLogistics) -> None:
     if not AMAP_TRAVEL.available():
         return
-    destination_anchor = AMAP_TRAVEL.lookup_place(destination, destination)
-    destination_center = None
-    if destination_anchor and destination_anchor.latitude is not None and destination_anchor.longitude is not None:
-        destination_center = (destination_anchor.longitude, destination_anchor.latitude)
+    destination_center = _resolve_destination_anchor(destination)
     max_radius = _destination_radius_km(destination)
     events_to_geocode: list[tuple[TimelineEvent, list[str]]] = []
     for day in timeline_days:
         for event in day.events:
+            if (
+                destination_center is not None
+                and event.latitude is not None
+                and event.longitude is not None
+                and _distance_km(destination_center, (event.longitude, event.latitude)) > max_radius
+            ):
+                logger.info(
+                    "[geocode] reset out-of-region existing point destination=%s event=%s location=%s",
+                    destination,
+                    event.title,
+                    event.location,
+                )
+                event.latitude = None
+                event.longitude = None
             if event.latitude is not None and event.longitude is not None:
                 continue
             variants: list[str] = []
@@ -700,7 +775,9 @@ def _hydrate_event_geocodes(destination: str, timeline_days: list[DayPlan], logi
     )
 
 
-def _build_day_routes(timeline_days: list[DayPlan]) -> None:
+def _build_day_routes(destination: str, timeline_days: list[DayPlan]) -> None:
+    destination_center = _resolve_destination_anchor(destination)
+    max_radius = _destination_radius_km(destination)
     day_data: list[tuple[DayPlan, list[tuple[float, float]], list[str]]] = []
     for day in timeline_days:
         ordered_points: list[tuple[float, float]] = []
@@ -711,6 +788,14 @@ def _build_day_routes(timeline_days: list[DayPlan]) -> None:
             if event.latitude is None or event.longitude is None:
                 continue
             point = (event.longitude, event.latitude)
+            if destination_center is not None and _distance_km(destination_center, point) > max_radius:
+                logger.info(
+                    "[route] skip out-of-region route point destination=%s event=%s location=%s",
+                    destination,
+                    event.title,
+                    event.location,
+                )
+                continue
             if ordered_points and ordered_points[-1] == point:
                 continue
             ordered_points.append(point)
@@ -1000,20 +1085,37 @@ def _enrich_visuals(destination: str, timeline_days: list[DayPlan]) -> list[Visu
             if _classify_event(event.title) != "scenic":
                 continue
             pending_events.append(event)
-            if len(pending_events) >= 8:
+            if len(pending_events) >= 20:
                 break
-        if len(pending_events) >= 8:
+        if len(pending_events) >= 20:
             break
     if not pending_events:
         return references
 
-    searched = parallel_call([(_search_event_visual, (destination, event)) for event in pending_events])
-    for reference in searched:
-        if reference and reference.image_url and reference.image_url not in seen_urls:
-            seen_urls.add(reference.image_url)
-            references.append(reference)
-        if len(references) >= 4:
-            return references
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    futures = {}
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="img-enrich") as pool:
+        for event in pending_events:
+            futures[pool.submit(_search_event_visual, destination, event)] = event
+            
+        for future in as_completed(futures):
+            event = futures[future]
+            try:
+                # 15s timeout per image search chain (which tries up to 3 queries)
+                res = future.result(timeout=15)
+                if res and res.image_url:
+                    if res.image_url not in seen_urls:
+                        seen_urls.add(res.image_url)
+                        references.append(res)
+                        if len(references) >= 4:
+                            return references
+            except Exception as exc:
+                # Assuming 'logger' is defined elsewhere in the module
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning("[enrich] image search failed for event '%s': %s", event.title, exc)
+
     return references
 
 
@@ -1333,12 +1435,13 @@ def _build_draft_llm_prompt(query: str, parsed: dict[str, str | int | None], int
         "Do not insert routine lunch or dinner fillers. Only add a food stop if it is a notable local recommendation or the user is food-focused. "
         "Each day MUST have 4-6 meaningful events spanning from ~08:00 to ~21:00. "
         "IMPORTANT: Group geographically close attractions on the same day. "
-        "Order each day's events so the route flows in one direction without backtracking across the city. "
+        "Order each day's events STRICTLY by physical proximity to form a logical route without backtracking (e.g., A -> B -> C, where A is near B, and B is near C). "
         "Visit nearby POIs consecutively to minimize transit time between stops. "
         "Spread activities evenly across morning, afternoon, and evening — no large empty gaps. "
-        "Travel logistics should be practical and the hotel should be a named property. "
+        "Travel logistics should be practical. You MUST select a centrally located hotel near the destination's primary attractions to minimize daily commuting. "
         "Pick a transport mode first, then provide realistic departure and arrival time windows. "
-        "If an exact price is unknown, write approximate."
+        "If an exact price is unknown, write approximate. "
+        "CRITICAL: If the destination is within Greater China (Mainland, Hong Kong, Macau, Taiwan), you MUST output the `destination`, `title`, and `location` fields in Simplified Chinese (e.g., '北京' instead of 'Beijing', '故宫' instead of 'Forbidden City'), even if the user query is in English. This is strictly required for the map API to geocode correctly."
     )
 
 
@@ -1360,10 +1463,12 @@ def _build_refinement_prompt(
         "Use both to produce a better final itinerary.\n"
         "REFINEMENT RULES:\n"
         "- Replace any generic or hallucinated POIs with real ones from the grounding context.\n"
-        "- Reorder events within each day based on geographic proximity to minimize backtracking.\n"
+        "- STRICTLY reorder events within each day based on actual geographic proximity to create a logical, linear route without any backtracking.\n"
         "- Ensure each day has 4-6 events from ~08:00 to ~21:00, spread evenly.\n"
         "- Group geographically close POIs on the same day.\n"
+        "- Choose a centrally located hotel from the grounding context if applicable, near the main attractions.\n"
         "- Keep only meaningful food stops (famous local specialties, not routine meals).\n"
+        "- CRITICAL: If the destination is within Greater China (Mainland, Hong Kong, Macau, Taiwan), you MUST output the `destination`, `title`, and `location` fields in Simplified Chinese (e.g., '北京' instead of 'Beijing', '故宫' instead of 'Forbidden City'). This is strictly required for the map API to geocode correctly.\n"
         "Return strict JSON only in the same schema as the draft.\n\n"
         f"Mode: {interaction_mode}\n"
         f"Initial draft JSON:\n{draft_json}\n\n"
@@ -1400,7 +1505,7 @@ def _trip_from_fallback(
     _inject_logistics_events(timeline_days, logistics)
     _prune_routine_food_events(timeline_days, style if isinstance(style, str) else None)
     _hydrate_event_geocodes(destination, timeline_days, logistics)
-    _build_day_routes(timeline_days)
+    _build_day_routes(destination, timeline_days)
     _ensure_cost_estimates(timeline_days)
     _assign_food_images(timeline_days)
     computed_budget = _estimate_budget_summary(parsed, logistics, timeline_days)
@@ -1522,7 +1627,7 @@ def _trip_from_model(
     _inject_logistics_events(timeline_days, logistics)
     _prune_routine_food_events(timeline_days, parsed.get("style") if isinstance(parsed.get("style"), str) else None)
     _hydrate_event_geocodes(logistics.destination, timeline_days, logistics)
-    _build_day_routes(timeline_days)
+    _build_day_routes(logistics.destination, timeline_days)
     _ensure_cost_estimates(timeline_days)
     _assign_food_images(timeline_days)
     image_references = _enrich_visuals(logistics.destination, timeline_days)
