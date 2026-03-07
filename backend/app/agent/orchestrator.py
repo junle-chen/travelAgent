@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypedDict
@@ -29,8 +30,8 @@ from app.schemas.providers import ProviderWarning, ResolvedModelConfig
 from app.tools.amap_live import AmapTravelService
 from app.tools.concurrent_utils import parallel_call, parallel_map
 from app.tools.image_lookup import ImageLookupService
-from app.tools.serpapi_live import SerpApiTravelService
 from app.tools.serper_live import SerperTravelService
+from app.tools.tavily_live import TavilyTravelService
 from langgraph.graph import END, START, StateGraph
 
 logger = logging.getLogger("travel_agent.planner")
@@ -44,8 +45,8 @@ PLACEHOLDER_IMAGES = {
 }
 IMAGE_LOOKUP = ImageLookupService()
 AMAP_TRAVEL = AmapTravelService()
-SERPAPI_TRAVEL = SerpApiTravelService()
 SERPER_TRAVEL = SerperTravelService()
+TAVILY_TRAVEL = TavilyTravelService()
 MAINLAND_CITY_HINTS = {
     "beijing",
     "shanghai",
@@ -122,6 +123,55 @@ def _sort_key(value: str) -> int:
         return int(hours) * 60 + int(minutes)
     except ValueError:
         return 0
+
+
+def _distance_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    # Fast-enough planar approximation for city-bound filtering.
+    lon1, lat1 = a
+    lon2, lat2 = b
+    lat_scale = 111.0
+    lon_scale = 111.0 * max(0.2, abs(math.cos(math.radians((lat1 + lat2) / 2.0))))
+    return (((lon2 - lon1) * lon_scale) ** 2 + ((lat2 - lat1) * lat_scale) ** 2) ** 0.5
+
+
+# Regional / multi-city destinations need a wider radius for POI filtering.
+_WIDE_REGION_TOKENS = {
+    "xinjiang", "新疆", "tibet", "西藏", "inner mongolia", "内蒙古",
+    "yunnan", "云南", "sichuan", "四川", "qinghai", "青海",
+    "gansu", "甘肃", "heilongjiang", "黑龙江", "guangxi", "广西",
+    "north xinjiang", "south xinjiang", "northern xinjiang", "southern xinjiang",
+    "北疆", "南疆", "川西", "滇西",
+}
+
+
+def _destination_radius_km(destination: str) -> float:
+    """Return max allowed distance (km) from destination center for POI validation."""
+    lowered = destination.lower().strip()
+    if any(token in lowered for token in _WIDE_REGION_TOKENS):
+        return 1200.0
+    return 200.0
+
+
+def _validate_amap_poi(
+    poi: Any,
+    destination_center: tuple[float, float] | None,
+    max_radius_km: float,
+) -> bool:
+    """Return True if the POI's coordinates are within max_radius_km of destination_center."""
+    if poi is None:
+        return False
+    if poi.latitude is None or poi.longitude is None:
+        return True  # No coordinates to check, pass through
+    if destination_center is None:
+        return True  # No anchor to compare, pass through
+    dist = _distance_km(destination_center, (poi.longitude, poi.latitude))
+    if dist > max_radius_km:
+        logger.info(
+            "[validate] skip out-of-region POI name=%s dist=%.0fkm max=%skm",
+            getattr(poi, 'name', '?'), dist, max_radius_km,
+        )
+        return False
+    return True
 
 
 def _default_departure_dates(duration_days: int) -> tuple[datetime, datetime]:
@@ -289,15 +339,15 @@ def _default_logistics(parsed: dict[str, str | int | None]) -> TravelLogistics:
 
 
 def _search_attraction_candidates(destination: str) -> list[tuple[str, str]]:
-    if SERPAPI_TRAVEL.available():
-        results = SERPAPI_TRAVEL.search(f"{destination} famous attractions landmarks travel guide", num=5)
-    elif SERPER_TRAVEL.available():
-        results = SERPER_TRAVEL.search(f"{destination} famous attractions landmarks travel guide", num=5)
-    else:
+    service = _active_search_service()
+    if not service:
         return []
+    results = service.search(f"{destination} famous attractions landmarks travel guide", num=5)
     candidates: list[tuple[str, str]] = []
     seen: set[str] = set()
     for item in results:
+        if not _result_mentions_destination(destination, _search_item_text(item)):
+            continue
         headline = item.title.split(" - ")[0].split(" | ")[0].strip()
         headline = headline.replace(f"{destination} ", "").strip()
         if not headline or len(headline) < 2:
@@ -313,15 +363,15 @@ def _search_attraction_candidates(destination: str) -> list[tuple[str, str]]:
 
 
 def _search_food_candidates(destination: str) -> list[tuple[str, str]]:
-    if SERPAPI_TRAVEL.available():
-        results = SERPAPI_TRAVEL.search(f"{destination} best local restaurants famous food", num=4)
-    elif SERPER_TRAVEL.available():
-        results = SERPER_TRAVEL.search(f"{destination} best local restaurants famous food", num=4)
-    else:
+    service = _active_search_service()
+    if not service:
         return []
+    results = service.search(f"{destination} best local restaurants famous food", num=4)
     candidates: list[tuple[str, str]] = []
     seen: set[str] = set()
     for item in results:
+        if not _result_mentions_destination(destination, _search_item_text(item)):
+            continue
         headline = item.title.split(" - ")[0].split(" | ")[0].strip()
         if not headline or len(headline) < 2:
             continue
@@ -336,10 +386,10 @@ def _search_food_candidates(destination: str) -> list[tuple[str, str]]:
 
 
 def _active_search_service() -> Any | None:
-    if SERPAPI_TRAVEL.available():
-        return SERPAPI_TRAVEL
     if SERPER_TRAVEL.available():
         return SERPER_TRAVEL
+    if TAVILY_TRAVEL.available():
+        return TAVILY_TRAVEL
     return None
 
 
@@ -347,6 +397,18 @@ def _search_item_text(item: Any) -> str:
     title = str(getattr(item, "title", "") or "")
     snippet = str(getattr(item, "snippet", "") or "")
     return f"{title} {snippet}".strip()
+
+
+def _result_mentions_destination(destination: str, text: str) -> bool:
+    destination_lower = destination.lower().strip()
+    normalized_text = text.lower().strip()
+    if not destination_lower:
+        return True
+    compact_destination = destination_lower.replace(" ", "")
+    compact_text = normalized_text.replace(" ", "")
+    if destination_lower in normalized_text or compact_destination in compact_text:
+        return True
+    return False
 
 
 def _extract_schedule_from_results(results: list[Any]) -> str | None:
@@ -407,11 +469,12 @@ def _build_search_context(
 ) -> tuple[str, dict[str, list], list[tuple[str, str]]]:
     """Return (context_string, amap_candidates, attraction_candidates).
 
-    Runs Amap, SerpAPI/Serper searches **in parallel** to cut wall-clock time.
+    Runs Amap, Serper searches **in parallel** to cut wall-clock time.
     """
     # ---- kick off parallel tasks ------------------------------------------------
     tasks: list[tuple] = []
     task_keys: list[str] = []
+    search_service = _active_search_service()
 
     # 0: amap candidates
     if AMAP_TRAVEL.available():
@@ -427,12 +490,11 @@ def _build_search_context(
         task_keys.append("search_food")
     # 3: transport search
     want_transport = bool(origin and destination and origin != "Your city")
-    if want_transport:
+    if want_transport and search_service:
         outbound_date, _ = _default_departure_dates(3)
         transport_keyword = "flight" if _choose_transport_mode(origin, destination) == "Flight" else "train"
         transport_query = f"{origin} to {destination} {outbound_date.strftime('%Y-%m-%d')} {transport_keyword} departure arrival time"
-        search_fn = SERPAPI_TRAVEL.search if SERPAPI_TRAVEL.available() else SERPER_TRAVEL.search
-        tasks.append((search_fn, (transport_query, 2)))
+        tasks.append((search_service.search, (transport_query, 2)))
         task_keys.append("transport")
 
     results = parallel_call(tasks) if tasks else []
@@ -492,9 +554,19 @@ def _apply_amap_candidates(
         return warnings
 
     candidates = prefetched_amap if prefetched_amap is not None else AMAP_TRAVEL.fetch_candidates(destination)
-    hotels = candidates.get("hotels", [])
-    restaurants = candidates.get("restaurants", [])
-    attractions = candidates.get("attractions", [])
+
+    # --- Resolve a destination anchor for POI validation ---
+    destination_anchor = AMAP_TRAVEL.lookup_place(destination, destination)
+    destination_center: tuple[float, float] | None = None
+    if destination_anchor and destination_anchor.latitude is not None and destination_anchor.longitude is not None:
+        destination_center = (destination_anchor.longitude, destination_anchor.latitude)
+    max_radius = _destination_radius_km(destination)
+
+    # --- Filter Amap POIs to only those near the destination ---
+    hotels = [poi for poi in candidates.get("hotels", []) if _validate_amap_poi(poi, destination_center, max_radius)]
+    restaurants = [poi for poi in candidates.get("restaurants", []) if _validate_amap_poi(poi, destination_center, max_radius)]
+    attractions = [poi for poi in candidates.get("attractions", []) if _validate_amap_poi(poi, destination_center, max_radius)]
+
     destination_key = destination.lower()
     fallback = FALLBACK_ATTRACTIONS.get(destination_key, [])
     search_candidates = prefetched_attractions if prefetched_attractions is not None else _search_attraction_candidates(destination)
@@ -569,6 +641,11 @@ def _apply_amap_candidates(
 def _hydrate_event_geocodes(destination: str, timeline_days: list[DayPlan], logistics: TravelLogistics) -> None:
     if not AMAP_TRAVEL.available():
         return
+    destination_anchor = AMAP_TRAVEL.lookup_place(destination, destination)
+    destination_center = None
+    if destination_anchor and destination_anchor.latitude is not None and destination_anchor.longitude is not None:
+        destination_center = (destination_anchor.longitude, destination_anchor.latitude)
+    max_radius = _destination_radius_km(destination)
     events_to_geocode: list[tuple[TimelineEvent, list[str]]] = []
     for day in timeline_days:
         for event in day.events:
@@ -596,6 +673,17 @@ def _hydrate_event_geocodes(destination: str, timeline_days: list[DayPlan], logi
         for keyword in keywords:
             poi = lookup_map.get(keyword)
             if poi and poi.latitude is not None and poi.longitude is not None:
+                if destination_center is not None:
+                    point = (poi.longitude, poi.latitude)
+                    if _distance_km(destination_center, point) > max_radius:
+                        logger.info(
+                            "[geocode] skip out-of-region point destination=%s keyword=%s dist=%.0fkm max=%skm",
+                            destination,
+                            keyword,
+                            _distance_km(destination_center, point),
+                            max_radius,
+                        )
+                        continue
                 event.latitude = poi.latitude
                 event.longitude = poi.longitude
                 resolved_count += 1
@@ -613,12 +701,13 @@ def _hydrate_event_geocodes(destination: str, timeline_days: list[DayPlan], logi
 
 
 def _build_day_routes(timeline_days: list[DayPlan]) -> None:
-    # Collect ordered points per day
     day_data: list[tuple[DayPlan, list[tuple[float, float]], list[str]]] = []
     for day in timeline_days:
         ordered_points: list[tuple[float, float]] = []
         labels: list[str] = []
         for event in day.events:
+            if _classify_event(event.title) == "transport":
+                continue
             if event.latitude is None or event.longitude is None:
                 continue
             point = (event.longitude, event.latitude)
@@ -628,7 +717,6 @@ def _build_day_routes(timeline_days: list[DayPlan]) -> None:
             labels.append(event.title)
         day_data.append((day, ordered_points, labels))
 
-    # Build routes for all days in parallel
     def _build_route(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
         return AMAP_TRAVEL.build_route_points(pts) if pts else []
 
@@ -661,8 +749,9 @@ def _reference_links(destination: str) -> list[ReferenceLink]:
     ]
     links: list[ReferenceLink] = []
     if service:
-        for query, label in query_plan:
-            for item in service.search(query, num=2):
+        search_results = parallel_call([(service.search, (query, 2)) for query, _ in query_plan])
+        for (_, label), results in zip(query_plan, search_results):
+            for item in results:
                 links.append(ReferenceLink(title=item.title, url=item.link, label=label))
         links = _sanitize_reference_links(links)
         if links:
@@ -814,12 +903,10 @@ def _ensure_cost_estimates(timeline_days: list[DayPlan]) -> None:
 
 
 def _assign_food_images(timeline_days: list[DayPlan]) -> None:
-    index = 0
-    for day in timeline_days:
-        for event in day.events:
-            if _classify_event(event.title) == "food":
-                event.image_url = FOOD_IMAGE_POOL[index % len(FOOD_IMAGE_POOL)]
-                index += 1
+    food_events = [event for day in timeline_days for event in day.events if _classify_event(event.title) == "food"]
+    for index, event in enumerate(food_events):
+        if not event.image_url:
+            event.image_url = FOOD_IMAGE_POOL[index % len(FOOD_IMAGE_POOL)]
 
 
 def _inject_logistics_events(timeline_days: list[DayPlan], logistics: TravelLogistics) -> None:
@@ -888,15 +975,10 @@ def _search_event_visual(destination: str, event: TimelineEvent) -> VisualRefere
             event.image_url = _food_image_for(f"{destination}-{event.title}-{event.location}")
         return None
 
-    candidates: list[str] = []
     candidates = [
         f"\"{event.title}\" {destination} landmark",
-        f"\"{event.location}\" {destination} landmark",
-        event.location,
         event.title,
         f"{destination} {event.title}",
-        f"{destination} {event.location}",
-        f"{event.title} landmark",
     ]
 
     for candidate in candidates:
@@ -918,9 +1000,9 @@ def _enrich_visuals(destination: str, timeline_days: list[DayPlan]) -> list[Visu
             if _classify_event(event.title) != "scenic":
                 continue
             pending_events.append(event)
-            if len(pending_events) >= 18:
+            if len(pending_events) >= 8:
                 break
-        if len(pending_events) >= 18:
+        if len(pending_events) >= 8:
             break
     if not pending_events:
         return references
@@ -958,6 +1040,106 @@ def _base_trip_fields(
         "created_at": now,
         "updated_at": now,
     }
+
+
+def _parse_cost_amount(cost: str | None) -> float | None:
+    if not cost:
+        return None
+    lowered = cost.strip().lower()
+    if lowered in {"free", "$0", "0"}:
+        return 0.0
+    match = re.search(r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)", cost)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _estimate_transport_one_way(logistics: TravelLogistics) -> float:
+    lowered = logistics.outbound_transport.lower()
+    if "flight" in lowered:
+        return 220.0
+    if "rail" in lowered or "train" in lowered:
+        return 70.0
+    if "ferry" in lowered:
+        return 55.0
+    return 90.0
+
+
+def _estimate_budget_summary(
+    parsed: dict[str, str | int | None],
+    logistics: TravelLogistics,
+    timeline_days: list[DayPlan],
+) -> BudgetSummary:
+    travelers = max(int(logistics.travelers or 1), 1)
+    room_count = max((travelers + 1) // 2, 1)
+    duration_days = max(len(timeline_days), 1)
+
+    hotel_amount = None
+    for day in timeline_days:
+        for event in day.events:
+            if _classify_event(event.title) == "hotel":
+                hotel_amount = _parse_cost_amount(event.cost_estimate)
+                if hotel_amount is not None:
+                    break
+        if hotel_amount is not None:
+            break
+    if hotel_amount is None:
+        hotel_amount = 120.0
+
+    event_totals_by_day: list[float] = []
+    for day in timeline_days:
+        day_total = 0.0
+        for event in day.events:
+            kind = _classify_event(event.title)
+            amount = _parse_cost_amount(event.cost_estimate)
+            if amount is None:
+                if kind == "food":
+                    amount = 18.0
+                elif kind == "scenic":
+                    amount = 25.0
+                else:
+                    amount = 0.0
+            if kind in {"food", "scenic"}:
+                day_total += amount * travelers
+            elif kind == "hotel":
+                day_total += amount * room_count
+            else:
+                day_total += amount
+        event_totals_by_day.append(day_total)
+
+    transport_total = _estimate_transport_one_way(logistics) * 2 * travelers
+    hotel_total = hotel_amount * room_count * max(duration_days - 1, 1)
+    event_total = sum(event_totals_by_day)
+    trip_total_value = round(transport_total + hotel_total + event_total)
+    current_day_value = round((event_totals_by_day[0] if event_totals_by_day else 0.0) + (hotel_amount * room_count))
+
+    raw_budget = str(parsed.get("budget") or "").strip().lower()
+    numeric_budget = _parse_cost_amount(raw_budget) if raw_budget else None
+    if numeric_budget is not None:
+        target = numeric_budget
+    elif "budget" in raw_budget:
+        target = 180.0 * travelers * duration_days + transport_total
+    elif "luxury" in raw_budget:
+        target = 420.0 * travelers * duration_days + transport_total
+    else:
+        target = 300.0 * travelers * duration_days + transport_total
+
+    ratio = trip_total_value / max(target, 1.0)
+    if ratio <= 1.0:
+        status = "on_track"
+    elif ratio <= 1.2:
+        status = "watch"
+    else:
+        status = "over"
+
+    return BudgetSummary(
+        trip_total_estimate=f"${trip_total_value}",
+        current_day_estimate=f"${current_day_value}",
+        budget_status=status,
+    )
 
 
 def _extract_json_object(content: str) -> dict[str, object]:
@@ -1045,6 +1227,13 @@ def _planning_system_prompt() -> str:
         "The user will provide free-form travel requirements.\n"
         "You must use the provided grounding context from search and map results to build a realistic trip.\n"
         "Choose practical transport, select well-known POIs, avoid filler meals, and only include standout food recommendations.\n"
+        "CRITICAL ROUTING RULES:\n"
+        "- Group attractions that are geographically close together on the same day.\n"
+        "- Within each day, order events so the route flows in one direction without backtracking.\n"
+        "- Minimize total transit time by visiting nearby POIs consecutively.\n"
+        "- Each day must have 4-6 meaningful events spanning from ~08:00 to ~21:00.\n"
+        "- Spread activities evenly across the day with reasonable gaps (1-2 hours per event).\n"
+        "- Do NOT leave large empty blocks; cover morning, afternoon, and evening.\n"
         "Output valid JSON only with no markdown fences."
     )
 
@@ -1055,7 +1244,10 @@ def _planning_draft_system_prompt() -> str:
         "The user's requirements will follow.\n"
         "Generate an initial structured itinerary draft in JSON.\n"
         "Do not use markdown fences.\n"
-        "Do not add routine lunch or dinner filler unless the trip is explicitly food-focused."
+        "Do not add routine lunch or dinner filler unless the trip is explicitly food-focused.\n"
+        "Group attractions by geographic area or district for each day.\n"
+        "Order events within each day to flow geographically without backtracking across the city.\n"
+        "Each day must have 4-6 events covering morning (~08:00) through evening (~21:00)."
     )
 
 
@@ -1139,7 +1331,11 @@ def _build_draft_llm_prompt(query: str, parsed: dict[str, str | int | None], int
         f"If no user date is present, use outbound date {outbound_date.strftime('%Y-%m-%d')} and return date {return_date.strftime('%Y-%m-%d')}.\n"
         "Make exactly one day object per travel day. Prioritize well-known attractions and landmark areas. "
         "Do not insert routine lunch or dinner fillers. Only add a food stop if it is a notable local recommendation or the user is food-focused. "
-        "Each day should usually have 3-4 meaningful events total. "
+        "Each day MUST have 4-6 meaningful events spanning from ~08:00 to ~21:00. "
+        "IMPORTANT: Group geographically close attractions on the same day. "
+        "Order each day's events so the route flows in one direction without backtracking across the city. "
+        "Visit nearby POIs consecutively to minimize transit time between stops. "
+        "Spread activities evenly across morning, afternoon, and evening — no large empty gaps. "
         "Travel logistics should be practical and the hotel should be a named property. "
         "Pick a transport mode first, then provide realistic departure and arrival time windows. "
         "If an exact price is unknown, write approximate."
@@ -1160,9 +1356,14 @@ def _build_refinement_prompt(
         "Now let's plan the journey from the start city to the target city.\n"
         "You are given:\n"
         "1. An initial itinerary draft from a large model.\n"
-        "2. Search and map grounding context.\n"
+        "2. Search and map grounding context with REAL POIs and their addresses.\n"
         "Use both to produce a better final itinerary.\n"
-        "Prefer real, well-known POIs and practical logistics. Keep only meaningful food stops.\n"
+        "REFINEMENT RULES:\n"
+        "- Replace any generic or hallucinated POIs with real ones from the grounding context.\n"
+        "- Reorder events within each day based on geographic proximity to minimize backtracking.\n"
+        "- Ensure each day has 4-6 events from ~08:00 to ~21:00, spread evenly.\n"
+        "- Group geographically close POIs on the same day.\n"
+        "- Keep only meaningful food stops (famous local specialties, not routine meals).\n"
         "Return strict JSON only in the same schema as the draft.\n\n"
         f"Mode: {interaction_mode}\n"
         f"Initial draft JSON:\n{draft_json}\n\n"
@@ -1202,8 +1403,7 @@ def _trip_from_fallback(
     _build_day_routes(timeline_days)
     _ensure_cost_estimates(timeline_days)
     _assign_food_images(timeline_days)
-    trip_total = f"${duration_days * 180 * logistics.travelers}"
-    day_total = f"${180 * logistics.travelers}"
+    computed_budget = _estimate_budget_summary(parsed, logistics, timeline_days)
     if base_fields["model_source"] != "mock":
         provider_warnings.append(
             ProviderWarning(
@@ -1226,11 +1426,7 @@ def _trip_from_fallback(
         ),
         clarification_questions=[],
         timeline_days=timeline_days,
-        budget_summary=BudgetSummary(
-            trip_total_estimate=trip_total,
-            current_day_estimate=day_total,
-            budget_status="on_track" if budget != "luxury" else "watch",
-        ),
+        budget_summary=computed_budget,
         memory_summary=MemorySummary(
             fixed_anchors=["Hotel check-in", logistics.hotel_name],
             open_constraints=[],
@@ -1270,7 +1466,7 @@ def _trip_from_model(
         raw_events = raw_day.get("events") if isinstance(raw_day, dict) else []
         events: list[TimelineEvent] = []
         if isinstance(raw_events, list):
-            for event_index, raw_event in enumerate(raw_events[:4]):
+            for event_index, raw_event in enumerate(raw_events[:8]):
                 if not isinstance(raw_event, dict):
                     continue
                 title = str(raw_event.get("title", f"Activity {event_index + 1}"))
@@ -1330,9 +1526,7 @@ def _trip_from_model(
     _ensure_cost_estimates(timeline_days)
     _assign_food_images(timeline_days)
     image_references = _enrich_visuals(logistics.destination, timeline_days)
-    budget_status = str(budget_payload.get("budget_status", "on_track"))
-    if budget_status not in {"on_track", "watch", "over"}:
-        budget_status = "watch"
+    computed_budget = _estimate_budget_summary(parsed, logistics, timeline_days)
 
     reference_links = _sanitize_reference_links([
         ReferenceLink(
@@ -1361,9 +1555,11 @@ def _trip_from_model(
         clarification_questions=[],
         timeline_days=timeline_days,
         budget_summary=BudgetSummary(
-            trip_total_estimate=str(budget_payload.get("trip_total_estimate", f"${duration_days * 180 * logistics.travelers}")),
-            current_day_estimate=str(budget_payload.get("current_day_estimate", f"${180 * logistics.travelers}")),
-            budget_status=budget_status,
+            trip_total_estimate=str(budget_payload.get("trip_total_estimate", computed_budget.trip_total_estimate)),
+            current_day_estimate=str(budget_payload.get("current_day_estimate", computed_budget.current_day_estimate)),
+            budget_status=str(budget_payload.get("budget_status", computed_budget.budget_status))
+            if str(budget_payload.get("budget_status", computed_budget.budget_status)) in {"on_track", "watch", "over"}
+            else computed_budget.budget_status,
         ),
         memory_summary=MemorySummary(
             fixed_anchors=["Hotel check-in", logistics.hotel_name],
@@ -1457,42 +1653,72 @@ def _run_langgraph_planner(
         )
         return {"trip": trip}
 
-    def search_node(state: PlannerGraphState) -> PlannerGraphState:
+    def search_and_draft_node(state: PlannerGraphState) -> PlannerGraphState:
+        """Run search and draft LLM call in parallel to save wall-clock time.
+
+        Each leg is independently error-tolerant: if either times out,
+        we continue with whatever succeeded.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         parsed = state["parsed"]
         destination = str(parsed.get("destination") or "Custom Destination")
         origin = str(parsed.get("origin") or "Your city")
         style = parsed.get("style") if isinstance(parsed.get("style"), str) else None
-        search_context, prefetched_amap, prefetched_attractions = _build_search_context(destination, origin, style)
+
+        def _do_search() -> tuple[str, dict[str, list], list[tuple[str, str]]]:
+            return _build_search_context(destination, origin, style)
+
+        def _do_draft() -> str:
+            if state["resolved_model"].source == "mock" or state.get("model_client") is None:
+                return ""
+            draft_system, draft_user = render_chat_prompts(
+                _planning_draft_system_prompt(),
+                _build_draft_llm_prompt(state["query"], state["parsed"], state["interaction_mode"]),
+            )
+            return state["model_client"].complete_json(
+                resolved_model=state["resolved_model"],
+                system_prompt=draft_system,
+                user_prompt=draft_user,
+            )
+
+        logger.info("[trip:%s] search+draft parallel start", state["trip_id"])
+
+        # Run both in parallel with individual error handling
+        search_context = "Grounding context from search results and map providers:\nAttractions:\n- None found"
+        prefetched_amap: dict[str, list] = {}
+        prefetched_attractions: list[tuple[str, str]] = []
+        draft_content = ""
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="plan-io") as pool:
+            search_future = pool.submit(_do_search)
+            draft_future = pool.submit(_do_draft)
+
+            try:
+                search_result = search_future.result(timeout=30)
+                search_context, prefetched_amap, prefetched_attractions = search_result
+            except Exception as exc:
+                logger.warning("[trip:%s] search leg failed, continuing with empty context: %s", state["trip_id"], exc)
+
+            try:
+                draft_content = draft_future.result(timeout=90)
+            except Exception as exc:
+                logger.warning("[trip:%s] draft leg failed, continuing with empty draft: %s", state["trip_id"], exc)
+
         logger.info(
-            "[trip:%s] search complete amap_attractions=%s amap_hotels=%s amap_restaurants=%s search_attractions=%s",
+            "[trip:%s] search+draft parallel complete amap_attractions=%s amap_hotels=%s search_attractions=%s draft_len=%s",
             state["trip_id"],
             len(prefetched_amap.get("attractions", [])),
             len(prefetched_amap.get("hotels", [])),
-            len(prefetched_amap.get("restaurants", [])),
             len(prefetched_attractions),
+            len(draft_content),
         )
         return {
             "search_context": search_context,
             "prefetched_amap": prefetched_amap,
             "prefetched_attractions": prefetched_attractions,
+            "draft_content": draft_content,
         }
-
-    def draft_node(state: PlannerGraphState) -> PlannerGraphState:
-        if state["resolved_model"].source == "mock" or state.get("model_client") is None:
-            logger.info("[trip:%s] draft skipped (mock/no model client)", state["trip_id"])
-            return {"draft_content": ""}
-        logger.info("[trip:%s] draft LLM call start", state["trip_id"])
-        draft_system, draft_user = render_chat_prompts(
-            _planning_draft_system_prompt(),
-            _build_draft_llm_prompt(state["query"], state["parsed"], state["interaction_mode"]),
-        )
-        draft_content = state["model_client"].complete_json(
-            resolved_model=state["resolved_model"],
-            system_prompt=draft_system,
-            user_prompt=draft_user,
-        )
-        logger.info("[trip:%s] draft LLM call complete", state["trip_id"])
-        return {"draft_content": draft_content}
 
     def refine_node(state: PlannerGraphState) -> PlannerGraphState:
         if state["resolved_model"].source == "mock" or state.get("model_client") is None:
@@ -1551,8 +1777,7 @@ def _run_langgraph_planner(
     graph = StateGraph(PlannerGraphState)
     graph.add_node("extract", extract_node)
     graph.add_node("end_clarification", end_clarification_node)
-    graph.add_node("search", search_node)
-    graph.add_node("draft", draft_node)
+    graph.add_node("search_and_draft", search_and_draft_node)
     graph.add_node("refine", refine_node)
     graph.add_node("enrich", enrich_node)
     graph.add_edge(START, "extract")
@@ -1561,12 +1786,11 @@ def _run_langgraph_planner(
         route_after_extract,
         {
             "end_clarification": "end_clarification",
-            "search": "search",
+            "search": "search_and_draft",
         },
     )
     graph.add_edge("end_clarification", END)
-    graph.add_edge("search", "draft")
-    graph.add_edge("draft", "refine")
+    graph.add_edge("search_and_draft", "refine")
     graph.add_edge("refine", "enrich")
     graph.add_edge("enrich", END)
 

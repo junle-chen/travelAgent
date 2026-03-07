@@ -19,12 +19,7 @@ TOOL_REGISTRY: dict[str, dict[str, object]] = {
         "requires_api_key": True,
         "requires_base_url": False,
     },
-    "serpapi_search": {
-        "api_key_vars": ["SERPAPI_API_KEY"],
-        "base_url_var": None,
-        "requires_api_key": True,
-        "requires_base_url": False,
-    },
+
     "visual_search": {
         "api_key_vars": None,
         "base_url_var": None,

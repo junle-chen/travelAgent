@@ -73,6 +73,7 @@ class AmapTravelService:
                     "key": api_key,
                     "keywords": keywords,
                     "city": city,
+                    "citylimit": "true",
                     "offset": offset,
                     "page": 1,
                     "extensions": "base",
@@ -83,8 +84,8 @@ class AmapTravelService:
         try:
             with request.urlopen(req, timeout=8) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-        except (error.URLError, json.JSONDecodeError):
-            logger.exception("[amap] place search failed city=%s keywords=%s", city, keywords)
+        except (error.URLError, json.JSONDecodeError) as exc:
+            logger.warning("[amap] place search failed city=%s keywords=%s error=%s", city, keywords, exc)
             return []
 
         pois = payload.get("pois", [])
@@ -114,6 +115,7 @@ class AmapTravelService:
             results.append(AmapPoi(name=name, address=address or city, latitude=latitude, longitude=longitude))
         return results
 
+    @lru_cache(maxsize=512)
     def _walking_route(self, origin: tuple[float, float], destination: tuple[float, float], api_key: str) -> list[tuple[float, float]]:
         url = (
             "https://restapi.amap.com/v3/direction/walking?"
@@ -129,8 +131,8 @@ class AmapTravelService:
         try:
             with request.urlopen(req, timeout=8) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-        except (error.URLError, json.JSONDecodeError):
-            logger.exception("[amap] walking route failed origin=%s destination=%s", origin, destination)
+        except (error.URLError, json.JSONDecodeError) as exc:
+            logger.warning("[amap] walking route failed origin=%s destination=%s error=%s", origin, destination, exc)
             return []
 
         paths = payload.get("route", {}).get("paths", [])

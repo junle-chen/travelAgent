@@ -62,14 +62,19 @@ export function TripPlannerPage() {
     if (!query.trim()) {
       return;
     }
+    const submittedQuery = query.trim();
     setLoading(true);
     setError(null);
     setViewState('submitting');
     try {
-      const response = await createTrip(query.trim(), modelConfig, interactionMode);
+      const response = await createTrip(submittedQuery, modelConfig, interactionMode);
       setTrip(response.trip);
       setViewState(response.trip.view_state);
-      setQuery('');
+      if (response.trip.view_state === 'itinerary_ready' || response.trip.view_state === 'partial_itinerary_with_warnings') {
+        setQuery('');
+      } else {
+        setQuery(submittedQuery);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to create trip');
       setViewState('error_recoverable');
@@ -93,7 +98,11 @@ export function TripPlannerPage() {
       const response = await postTripMessage(trip.trip_id, nextMessage, modelConfig, interactionMode);
       setTrip(response.trip);
       setViewState(response.trip.view_state);
-      setQuery('');
+      if (response.trip.view_state === 'itinerary_ready' || response.trip.view_state === 'partial_itinerary_with_warnings') {
+        setQuery('');
+      } else {
+        setQuery(nextMessage);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to update trip');
       setViewState('error_recoverable');
@@ -102,7 +111,12 @@ export function TripPlannerPage() {
     }
   };
 
-  const showHero = !trip || viewState === 'idle';
+  const showHero =
+    !trip ||
+    viewState === 'idle' ||
+    viewState === 'submitting' ||
+    viewState === 'needs_clarification' ||
+    viewState === 'error_recoverable';
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,#fef7eb_0%,#f7f2e8_45%,#edf6f4_100%)] text-ink">

@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 from urllib import error, parse, request
 
-from app.tools.serpapi_live import SerpApiTravelService
 from app.tools.serper_live import SerperTravelService
 
 USER_AGENT = "travel-agent/0.1 (+https://localhost)"
@@ -23,7 +22,6 @@ class ImageReference:
 
 class ImageLookupService:
     def __init__(self) -> None:
-        self.serpapi = SerpApiTravelService()
         self.serper = SerperTravelService()
 
     @lru_cache(maxsize=512)
@@ -32,15 +30,6 @@ class ImageLookupService:
         if not cleaned:
             return None
         logger.info("[images] search query=%s", cleaned)
-        if self.serpapi.available():
-            for variant in self._query_variants(cleaned):
-                items = self.serpapi.search_images(variant, num=6)
-                ranked = sorted(items, key=lambda item: self._score_image_item(cleaned, item.title), reverse=True)
-                for item in ranked:
-                    if self._score_image_item(cleaned, item.title) < 6:
-                        continue
-                    logger.info("[images] serpapi hit title=%s", item.title)
-                    return ImageReference(title=item.title or cleaned, image_url=item.image_url, source_url=item.source_url)
         if self.serper.available():
             for variant in self._query_variants(cleaned):
                 items = self.serper.search_images(variant, num=6)

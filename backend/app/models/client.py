@@ -48,7 +48,7 @@ class ModelApiClient:
         )
 
         try:
-            with request.urlopen(http_request, timeout=45) as response:
+            with request.urlopen(http_request, timeout=120) as response:
                 raw = response.read().decode("utf-8")
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

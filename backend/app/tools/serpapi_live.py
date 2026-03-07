@@ -123,8 +123,8 @@ class SerpApiTravelService:
         url = f"{SERPAPI_SEARCH_URL}?{parse.urlencode(query)}"
         req = request.Request(url, headers={"Accept": "application/json", "User-Agent": "travel-agent/0.1"})
         try:
-            with request.urlopen(req, timeout=12) as response:
+            with request.urlopen(req, timeout=8) as response:
                 return json.loads(response.read().decode("utf-8"))
-        except (error.URLError, error.HTTPError, json.JSONDecodeError):
-            logger.exception("[serpapi] request failed")
+        except (error.URLError, error.HTTPError, json.JSONDecodeError) as exc:
+            logger.warning("[serpapi] request failed error=%s", exc)
             return {}

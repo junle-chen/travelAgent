@@ -112,8 +112,8 @@ class SerperTravelService:
             method="POST",
         )
         try:
-            with request.urlopen(req, timeout=12) as response:
+            with request.urlopen(req, timeout=8) as response:
                 return json.loads(response.read().decode("utf-8"))
-        except (error.URLError, error.HTTPError, json.JSONDecodeError):
-            logger.exception("[serper] request failed url=%s", url)
+        except (error.URLError, error.HTTPError, json.JSONDecodeError) as exc:
+            logger.warning("[serper] request failed url=%s error=%s", url, exc)
             return {}

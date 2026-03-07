@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 
 from app.agent.orchestrator import build_trip_state
@@ -15,6 +17,7 @@ settings = get_settings()
 database = Database(settings)
 model_resolver = ModelCredentialResolver(settings)
 model_client = ModelApiClient()
+logger = logging.getLogger("travel_agent.routes.trips")
 
 
 @router.post("", response_model=TripResponse)
@@ -27,6 +30,9 @@ def create_trip(payload: CreateTripRequest) -> TripResponse:
         trip = build_trip_state(payload.query, resolved, interaction_mode=payload.interaction_mode, model_client=model_client)
     except ModelApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unhandled create_trip failure")
+        raise HTTPException(status_code=500, detail=f"Trip generation failed: {exc}") from exc
     database.save_trip(trip, payload.query)
     return TripResponse(trip=trip)
 
@@ -53,6 +59,9 @@ def post_message(trip_id: str, payload: TripMessageRequest) -> TripResponse:
         trip = build_trip_state(combined_query, resolved, interaction_mode=payload.interaction_mode, existing_trip_id=trip_id, model_client=model_client)
     except ModelApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unhandled post_message failure")
+        raise HTTPException(status_code=500, detail=f"Trip update failed: {exc}") from exc
     database.save_trip(trip, payload.message)
     return TripResponse(trip=trip)
 
@@ -87,5 +96,8 @@ def regenerate_trip(trip_id: str, payload: RegenerateRequest) -> TripResponse:
         trip = build_trip_state(existing.query, resolved, existing_trip_id=trip_id, model_client=model_client)
     except ModelApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unhandled regenerate_trip failure")
+        raise HTTPException(status_code=500, detail=f"Trip regeneration failed: {exc}") from exc
     database.save_trip(trip, f"regenerate:{payload.scope}")
     return TripResponse(trip=trip)

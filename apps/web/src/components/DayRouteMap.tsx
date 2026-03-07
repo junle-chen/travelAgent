@@ -6,6 +6,11 @@ interface DayRouteMapProps {
     day: DayPlan;
 }
 
+function isRouteEvent(title: string) {
+    const lowered = title.toLowerCase();
+    return !['flight', 'train', 'transfer', 'arrival', 'return', 'ferry'].some((token) => lowered.includes(token));
+}
+
 function normalizePoints(points: DayPlan['route_points']) {
     if (!points.length) {
         return [];
@@ -112,7 +117,7 @@ export function DayRouteMap({ day }: DayRouteMapProps) {
     const stopMarkers = useMemo(
         () =>
             day.events
-                .filter((event) => typeof event.latitude === 'number' && typeof event.longitude === 'number')
+                .filter((event) => isRouteEvent(event.title) && typeof event.latitude === 'number' && typeof event.longitude === 'number')
                 .map((event, index) => ({
                     index,
                     title: event.title,
@@ -132,7 +137,7 @@ export function DayRouteMap({ day }: DayRouteMapProps) {
             return undefined;
         }
         let disposed = false;
-        let mapInstance: { destroy?: () => void; setFitView?: (items?: unknown[]) => void; add?: (items: unknown[]) => void } | null = null;
+        let mapInstance: { destroy?: () => void; setFitView?: (items?: unknown[], immediately?: boolean, avoid?: number[]) => void; add?: (items: unknown[]) => void } | null = null;
         const mapContainer = containerRef.current;
         if (!mapContainer) {
             return undefined;
@@ -145,9 +150,15 @@ export function DayRouteMap({ day }: DayRouteMapProps) {
                 }
                 setUseFallbackMap(false);
                 mapContainer.innerHTML = '';
+
+                const validStopMarkers = stopMarkers.filter(
+                    (p) => p.latitude !== 0 && p.longitude !== 0 && Math.abs(p.latitude) > 1 && Math.abs(p.longitude) > 1,
+                );
+                const centerMarker = validStopMarkers[0] ?? points[0];
+
                 mapInstance = new AMap.Map(mapContainer, {
                     zoom: 12,
-                    center: [stopMarkers[0]?.longitude ?? points[0].longitude, stopMarkers[0]?.latitude ?? points[0].latitude],
+                    center: [centerMarker.longitude, centerMarker.latitude],
                     resizeEnable: true,
                     viewMode: '2D',
                     zoomEnable: true,
@@ -156,16 +167,23 @@ export function DayRouteMap({ day }: DayRouteMapProps) {
                     showLabel: true,
                 });
                 const overlays: unknown[] = [];
-                overlays.push(
-                    new AMap.Polyline({
-                        path: points.map((point) => [point.longitude, point.latitude]),
-                        strokeColor: '#0f766e',
-                        strokeWeight: 5,
-                        strokeOpacity: 0.9,
-                        showDir: true,
-                    }),
+
+                const validRoutePoints = points.filter(
+                    (p) => p.latitude !== 0 && p.longitude !== 0 && Math.abs(p.latitude) > 1 && Math.abs(p.longitude) > 1,
                 );
-                stopMarkers.forEach((point, index) => {
+
+                if (validRoutePoints.length >= 2) {
+                    overlays.push(
+                        new AMap.Polyline({
+                            path: validRoutePoints.map((point) => [point.longitude, point.latitude]),
+                            strokeColor: '#0f766e',
+                            strokeWeight: 5,
+                            strokeOpacity: 0.9,
+                            showDir: true,
+                        }),
+                    );
+                }
+                validStopMarkers.forEach((point, index) => {
                     const marker = new AMap.Marker({
                         position: [point.longitude, point.latitude],
                         title: point.title,
@@ -187,7 +205,7 @@ export function DayRouteMap({ day }: DayRouteMapProps) {
                 });
                 mapInstance.add?.(overlays);
                 window.requestAnimationFrame(() => {
-                    mapInstance?.setFitView?.(overlays);
+                    mapInstance?.setFitView?.(overlays, false, [80, 80, 80, 80]);
                 });
             })
             .catch(() => {
