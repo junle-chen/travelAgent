@@ -1,7 +1,6 @@
 import { motion } from 'framer-motion';
 
 import type { DayPlan } from '../lib/models';
-import { DayRouteMap } from './DayRouteMap';
 import { TimelineEventCard } from './TimelineEventCard';
 
 interface TimelineProps {
@@ -23,7 +22,6 @@ export function Timeline({ day }: TimelineProps) {
           <TimelineEventCard event={event} />
         </div>
       ))}
-      <DayRouteMap day={day} />
     </motion.section>
   );
 }

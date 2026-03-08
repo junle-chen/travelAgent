@@ -81,6 +81,13 @@ export interface TripState {
     trip_total_estimate: string;
     current_day_estimate: string;
     budget_status: 'on_track' | 'watch' | 'over';
+    transport_total_estimate?: string | null;
+    flight_total_estimate?: string | null;
+    rail_total_estimate?: string | null;
+    city_transport_total_estimate?: string | null;
+    car_rental_total_estimate?: string | null;
+    hotel_total_estimate?: string | null;
+    notes?: string[];
   };
   memory_summary: {
     fixed_anchors: string[];

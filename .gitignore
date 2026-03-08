@@ -8,3 +8,4 @@ __pycache__/
 *.pyc
 dist/
 coverage/
+backend/tool_cache.sqlite3

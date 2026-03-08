@@ -11,7 +11,14 @@ export function ReferenceLinksPanel({ trip }: ReferenceLinksPanelProps) {
     if (url.includes('example.com') || url.includes('xiaohongshu.com/search_result')) {
       return false;
     }
-    return label.includes('blog') || label.includes('report') || label.includes('forum');
+    return (
+      label.includes('blog') ||
+      label.includes('report') ||
+      label.includes('forum') ||
+      label.includes('攻略') ||
+      label.includes('游记') ||
+      label.includes('论坛')
+    );
   });
 
   if (!links.length) {

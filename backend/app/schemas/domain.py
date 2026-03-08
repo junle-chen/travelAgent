@@ -63,6 +63,13 @@ class BudgetSummary(BaseModel):
     trip_total_estimate: str
     current_day_estimate: str
     budget_status: Literal["on_track", "watch", "over"]
+    transport_total_estimate: str | None = None
+    flight_total_estimate: str | None = None
+    rail_total_estimate: str | None = None
+    city_transport_total_estimate: str | None = None
+    car_rental_total_estimate: str | None = None
+    hotel_total_estimate: str | None = None
+    notes: list[str] = Field(default_factory=list)
 
 
 class MemorySummary(BaseModel):

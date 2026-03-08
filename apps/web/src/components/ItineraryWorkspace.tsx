@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import type { TripState } from '../lib/models';
 import { BudgetCounter } from './BudgetCounter';
 import { ConflictBanner } from './ConflictBanner';
+import { DayRouteMap } from './DayRouteMap';
 import { DayTabs } from './DayTabs';
 import { ItineraryHeader } from './ItineraryHeader';
 import { MapPreviewCard } from './MapPreviewCard';
@@ -35,6 +36,7 @@ export function ItineraryWorkspace({ trip }: ItineraryWorkspaceProps) {
         <div className="space-y-4 overflow-hidden">
           <DayTabs days={trip.timeline_days} activeDay={day.day_index} onChange={setActiveDay} />
           <Timeline day={day} />
+          <DayRouteMap days={trip.timeline_days} destination={trip.travel_logistics.destination} />
           <ReferenceLinksPanel trip={trip} />
         </div>
         <div className="space-y-4">

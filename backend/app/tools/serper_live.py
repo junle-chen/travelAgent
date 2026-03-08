@@ -8,10 +8,35 @@ from functools import lru_cache
 from urllib import error, request
 
 from app.core.config import get_settings
+from app.tools.request_cache import get_cached_json, set_cached_json
 
 SERPER_SEARCH_URL = "https://google.serper.dev/search"
 SERPER_IMAGES_URL = "https://google.serper.dev/images"
 logger = logging.getLogger("travel_agent.tools.serper")
+SERPER_CACHE_TTL_SECONDS = 60 * 60 * 6
+CITY_ZH_ALIASES: dict[str, str] = {
+    "beijing": "北京",
+    "shanghai": "上海",
+    "shenzhen": "深圳",
+    "guangzhou": "广州",
+    "hangzhou": "杭州",
+    "xiamen": "厦门",
+    "chengdu": "成都",
+    "nanjing": "南京",
+    "suzhou": "苏州",
+    "wuhan": "武汉",
+    "changsha": "长沙",
+    "hong kong": "香港",
+    "hongkong": "香港",
+    "xinjiang": "新疆",
+    "north xinjiang": "北疆",
+    "northern xinjiang": "北疆",
+    "south xinjiang": "南疆",
+    "southern xinjiang": "南疆",
+    "urumqi": "乌鲁木齐",
+    "yining": "伊宁",
+    "ili": "伊犁",
+}
 
 
 @dataclass(frozen=True)
@@ -26,6 +51,21 @@ class ImageItem:
     title: str
     image_url: str
     source_url: str | None
+
+
+@dataclass(frozen=True)
+class FlightOption:
+    title: str
+    link: str
+    schedule: str | None
+    price: str | None
+
+
+@dataclass(frozen=True)
+class HotelRate:
+    title: str
+    link: str
+    nightly_price: str | None
 
 
 class SerperTravelService:
@@ -77,29 +117,99 @@ class SerperTravelService:
     def extract_schedule(self, query: str) -> str | None:
         results = self.search(query, num=3)
         for item in results:
-            combined = f"{item.title} {item.snippet}"
-            times = re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", combined)
-            if len(times) >= 2:
-                return f"{times[0]} - {times[1]}"
-            if len(times) == 1:
-                return times[0]
+            schedule = self._extract_schedule_text(f"{item.title} {item.snippet}")
+            if schedule:
+                return schedule
         return None
 
     def extract_price(self, query: str) -> str | None:
         results = self.search(query, num=3)
         for item in results:
-            combined = f"{item.title} {item.snippet}"
-            match = re.search(r"(?:HK\\$|US\\$|\\$|CNY\\s?|RMB\\s?|¥)\\s?([0-9][0-9,]*(?:\\.[0-9]{1,2})?)", combined, re.IGNORECASE)
-            if match:
-                symbol_match = re.search(r"(HK\\$|US\\$|\\$|CNY\\s?|RMB\\s?|¥)", combined, re.IGNORECASE)
-                symbol = symbol_match.group(1).strip() if symbol_match else "$"
-                return f"{symbol}{match.group(1)}"
+            price = self._extract_price_text(f"{item.title} {item.snippet}")
+            if price:
+                return price
         return None
+
+    @lru_cache(maxsize=256)
+    def search_flights(self, origin: str, destination: str, date: str, num: int = 3) -> list[FlightOption]:
+        normalized_origin = self._normalize_city_name(origin)
+        normalized_destination = self._normalize_city_name(destination)
+        if self._should_use_chinese(normalized_origin, normalized_destination):
+            query = (
+                f"site:google.com/travel/flights {normalized_origin} 到 {normalized_destination} {date} "
+                "机票 航班 价格 起飞 到达"
+            )
+        else:
+            query = (
+                f"site:google.com/travel/flights {normalized_origin} to {normalized_destination} {date} "
+                "flight price departure arrival"
+            )
+        items = self.search(query, num=max(1, min(num, 6)))
+        options: list[FlightOption] = []
+        for item in items:
+            combined = f"{item.title} {item.snippet}"
+            options.append(
+                FlightOption(
+                    title=item.title,
+                    link=item.link,
+                    schedule=self._extract_schedule_text(combined),
+                    price=self._extract_price_text(combined),
+                )
+            )
+        return options
+
+    @lru_cache(maxsize=256)
+    def search_hotel_rates(
+        self,
+        hotel_name: str,
+        destination: str,
+        check_in_date: str,
+        num: int = 3,
+    ) -> list[HotelRate]:
+        normalized_destination = self._normalize_city_name(destination)
+        if self._should_use_chinese(hotel_name, normalized_destination):
+            query = f"{hotel_name} {normalized_destination} 酒店 每晚 价格 {check_in_date} 预订"
+        else:
+            query = f"{hotel_name} {normalized_destination} hotel nightly price {check_in_date} booking"
+        items = self.search(query, num=max(1, min(num, 6)))
+        rates: list[HotelRate] = []
+        for item in items:
+            combined = f"{item.title} {item.snippet}"
+            rates.append(
+                HotelRate(
+                    title=item.title,
+                    link=item.link,
+                    nightly_price=self._extract_price_text(combined),
+                )
+            )
+        return rates
+
+    @staticmethod
+    def _extract_schedule_text(text: str) -> str | None:
+        times = re.findall(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", text)
+        if len(times) >= 2:
+            return f"{times[0]} - {times[1]}"
+        if len(times) == 1:
+            return times[0]
+        return None
+
+    @staticmethod
+    def _extract_price_text(text: str) -> str | None:
+        match = re.search(r"(?:HK\\$|US\\$|\\$|CNY\\s?|RMB\\s?|¥)\\s?([0-9][0-9,]*(?:\\.[0-9]{1,2})?)", text, re.IGNORECASE)
+        if not match:
+            return None
+        symbol_match = re.search(r"(HK\\$|US\\$|\\$|CNY\\s?|RMB\\s?|¥)", text, re.IGNORECASE)
+        symbol = symbol_match.group(1).strip() if symbol_match else "$"
+        return f"{symbol}{match.group(1)}"
 
     def _post(self, url: str, payload: dict[str, object]) -> dict[str, object]:
         config = self.settings.get_tool_env_config(["SERPER_API_KEY"])
         if not config.api_key:
             return {}
+        cache_key = json.dumps({"url": url, "payload": payload}, ensure_ascii=False, sort_keys=True)
+        cached = get_cached_json("serper.post", cache_key, max_age_seconds=SERPER_CACHE_TTL_SECONDS)
+        if isinstance(cached, dict):
+            return cached
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
             url,
@@ -113,7 +223,34 @@ class SerperTravelService:
         )
         try:
             with request.urlopen(req, timeout=8) as response:
-                return json.loads(response.read().decode("utf-8"))
+                data = json.loads(response.read().decode("utf-8"))
+                set_cached_json("serper.post", cache_key, data)
+                return data
         except (error.URLError, error.HTTPError, json.JSONDecodeError) as exc:
             logger.warning("[serper] request failed url=%s error=%s", url, exc)
             return {}
+
+    @staticmethod
+    def _contains_chinese(text: str | None) -> bool:
+        if not text:
+            return False
+        return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+    @staticmethod
+    def _normalize_city_name(city: str) -> str:
+        cleaned = city.strip()
+        lowered = cleaned.lower()
+        return CITY_ZH_ALIASES.get(lowered, cleaned)
+
+    def _should_use_chinese(self, *values: str) -> bool:
+        merged = " ".join(value for value in values if value).strip()
+        if not merged:
+            return False
+        if self._contains_chinese(merged):
+            return True
+        lowered = merged.lower()
+        compact = lowered.replace(" ", "")
+        return any(
+            token in lowered or token.replace(" ", "") in compact
+            for token in ["china", "beijing", "shanghai", "shenzhen", "xinjiang", "hong kong", "taiwan", "macau"]
+        )

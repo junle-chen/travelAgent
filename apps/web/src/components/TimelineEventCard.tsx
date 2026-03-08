@@ -6,17 +6,17 @@ interface TimelineEventCardProps {
   event: TimelineEvent;
 }
 
-const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=1200&q=80';
-
 export function TimelineEventCard({ event }: TimelineEventCardProps) {
-  const [imageSrc, setImageSrc] = useState(event.image_url || FALLBACK_IMAGE);
-  const hasImage = Boolean(event.image_url);
+  const [imageSrc, setImageSrc] = useState(event.image_url || '');
+  const hasImage = Boolean(imageSrc);
+  const useChinese = /[\u4e00-\u9fff]/.test(`${event.title}${event.location}${event.description}`);
+  const transitLabel = useChinese ? '交通' : 'Transit';
 
   return (
     <article className="grid gap-4 rounded-[1.75rem] border border-white/70 bg-white/90 p-4 shadow-sm sm:grid-cols-[8rem_1fr]">
       <div>
         <p className="text-sm font-semibold text-lagoon">{event.start_time} - {event.end_time}</p>
-        <p className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-400">Transit {event.travel_time_from_previous}</p>
+        <p className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-400">{transitLabel} {event.travel_time_from_previous}</p>
       </div>
       <div className={`grid gap-4 ${hasImage ? 'md:grid-cols-[8rem_1fr]' : ''}`}>
         {hasImage ? (
@@ -25,7 +25,7 @@ export function TimelineEventCard({ event }: TimelineEventCardProps) {
               src={imageSrc}
               alt={event.title}
               className="h-28 w-full object-cover"
-              onError={() => setImageSrc(FALLBACK_IMAGE)}
+              onError={() => setImageSrc('')}
             />
           </div>
         ) : null}

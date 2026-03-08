@@ -23,6 +23,47 @@ export function BudgetCounter({ trip }: BudgetCounterProps) {
           <span>Current day</span>
           <span className="font-semibold text-ink">{trip.budget_summary.current_day_estimate}</span>
         </div>
+        {trip.budget_summary.transport_total_estimate ? (
+          <div className="flex items-center justify-between">
+            <span>Transport</span>
+            <span className="font-semibold text-ink">{trip.budget_summary.transport_total_estimate}</span>
+          </div>
+        ) : null}
+        {trip.budget_summary.flight_total_estimate ? (
+          <div className="flex items-center justify-between">
+            <span>Flights</span>
+            <span className="font-semibold text-ink">{trip.budget_summary.flight_total_estimate}</span>
+          </div>
+        ) : null}
+        {trip.budget_summary.rail_total_estimate ? (
+          <div className="flex items-center justify-between">
+            <span>Rail</span>
+            <span className="font-semibold text-ink">{trip.budget_summary.rail_total_estimate}</span>
+          </div>
+        ) : null}
+        {trip.budget_summary.city_transport_total_estimate ? (
+          <div className="flex items-center justify-between">
+            <span>City transport</span>
+            <span className="font-semibold text-ink">{trip.budget_summary.city_transport_total_estimate}</span>
+          </div>
+        ) : null}
+        {trip.budget_summary.car_rental_total_estimate ? (
+          <div className="flex items-center justify-between">
+            <span>Car rental</span>
+            <span className="font-semibold text-ink">{trip.budget_summary.car_rental_total_estimate}</span>
+          </div>
+        ) : null}
+        {trip.budget_summary.hotel_total_estimate ? (
+          <div className="flex items-center justify-between">
+            <span>Stay</span>
+            <span className="font-semibold text-ink">{trip.budget_summary.hotel_total_estimate}</span>
+          </div>
+        ) : null}
+        {trip.budget_summary.notes && trip.budget_summary.notes.length ? (
+          <div className="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-500">
+            {trip.budget_summary.notes.join(' · ')}
+          </div>
+        ) : null}
         <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>
           {trip.budget_summary.budget_status.replace('_', ' ')}
         </span>
