@@ -20,20 +20,36 @@ model_client = ModelApiClient()
 logger = logging.getLogger("travel_agent.routes.trips")
 
 
+def _normalize_user_query(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return text.strip()
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(line)
+    return "\n".join(deduped)
+
+
 @router.post("", response_model=TripResponse)
 def create_trip(payload: CreateTripRequest) -> TripResponse:
+    normalized_query = _normalize_user_query(payload.query)
     try:
         resolved = model_resolver.resolve(payload.model_request)
     except ModelResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
-        trip = build_trip_state(payload.query, resolved, interaction_mode=payload.interaction_mode, model_client=model_client)
+        trip = build_trip_state(normalized_query, resolved, interaction_mode=payload.interaction_mode, model_client=model_client)
     except ModelApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("Unhandled create_trip failure")
         raise HTTPException(status_code=500, detail=f"Trip generation failed: {exc}") from exc
-    database.save_trip(trip, payload.query)
+    database.save_trip(trip, normalized_query)
     return TripResponse(trip=trip)
 
 
@@ -54,7 +70,11 @@ def post_message(trip_id: str, payload: TripMessageRequest) -> TripResponse:
         resolved = model_resolver.resolve(payload.model_request)
     except ModelResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    combined_query = f"{existing.query}\n{payload.message}"
+    incoming = _normalize_user_query(payload.message)
+    if payload.interaction_mode == "direct":
+        combined_query = incoming
+    else:
+        combined_query = _normalize_user_query(f"{existing.query}\n{incoming}")
     try:
         trip = build_trip_state(combined_query, resolved, interaction_mode=payload.interaction_mode, existing_trip_id=trip_id, model_client=model_client)
     except ModelApiError as exc:
@@ -62,7 +82,7 @@ def post_message(trip_id: str, payload: TripMessageRequest) -> TripResponse:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Unhandled post_message failure")
         raise HTTPException(status_code=500, detail=f"Trip update failed: {exc}") from exc
-    database.save_trip(trip, payload.message)
+    database.save_trip(trip, incoming)
     return TripResponse(trip=trip)
 
 

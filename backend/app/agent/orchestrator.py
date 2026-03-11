@@ -30,6 +30,7 @@ from app.schemas.providers import ProviderWarning, ResolvedModelConfig
 from app.tools.amap_live import AmapTravelService
 from app.tools.concurrent_utils import parallel_call, parallel_map
 from app.tools.image_lookup import ImageLookupService
+from app.tools.request_cache import get_cached_json, set_cached_json
 from app.tools.serper_live import FlightOption, HotelRate, SerperTravelService
 from app.tools.tavily_live import TavilyTravelService
 from langgraph.graph import END, START, StateGraph
@@ -47,6 +48,7 @@ IMAGE_LOOKUP = ImageLookupService()
 AMAP_TRAVEL = AmapTravelService()
 SERPER_TRAVEL = SerperTravelService()
 TAVILY_TRAVEL = TavilyTravelService()
+SCENIC_IMAGE_CACHE_TTL_SECONDS = 60 * 60 * 24 * 30
 MAINLAND_CITY_HINTS = {
     "beijing",
     "shanghai",
@@ -258,6 +260,10 @@ def _food_image_for(seed: str) -> str:
     return FOOD_IMAGE_POOL[_stable_index(seed, len(FOOD_IMAGE_POOL))]
 
 
+def _scenic_image_for(seed: str) -> str:
+    return SCENIC_IMAGE_POOL[_stable_index(seed, len(SCENIC_IMAGE_POOL))]
+
+
 def _contains_chinese(text: str | None) -> bool:
     if not text:
         return False
@@ -359,6 +365,11 @@ _WIDE_REGION_TOKENS = {
     "北疆", "南疆", "川西", "滇西",
 }
 
+
+def _is_north_xinjiang_destination(destination: str) -> bool:
+    lowered = _normalize_city_for_geocode(destination).lower().strip()
+    return any(token in lowered for token in {"north xinjiang", "northern xinjiang", "北疆"})
+
 _REGION_ANCHORS: dict[str, tuple[float, float]] = {
     "新疆": (87.61, 43.82), # Urumqi
     "北疆": (87.61, 43.82),
@@ -399,6 +410,28 @@ _CITY_ANCHORS: dict[str, tuple[float, float]] = {
     "urumqi": (87.6168, 43.8256),
     "yining": (81.3179, 43.9228),
     "ili": (81.3242, 43.9169),
+    "altay": (88.1396, 47.8484),
+    "burqin": (86.8619, 48.2011),
+    "fuyun": (89.5268, 46.9944),
+    "buerjin": (86.8619, 48.2011),
+    "bole": (82.0722, 44.9060),
+    "klamayi": (84.8892, 45.5799),
+    "kuitun": (84.9000, 44.4269),
+    "aletai": (88.1396, 47.8484),
+    "阿勒泰": (88.1396, 47.8484),
+    "阿勒泰地区": (88.1396, 47.8484),
+    "布尔津": (86.8619, 48.2011),
+    "布尔津县": (86.8619, 48.2011),
+    "富蕴": (89.5268, 46.9944),
+    "富蕴县": (89.5268, 46.9944),
+    "博乐": (82.0722, 44.9060),
+    "博乐市": (82.0722, 44.9060),
+    "克拉玛依": (84.8892, 45.5799),
+    "奎屯": (84.9000, 44.4269),
+    "霍城": (80.8788, 44.0477),
+    "霍城县": (80.8788, 44.0477),
+    "新源": (83.2585, 43.4340),
+    "新源县": (83.2585, 43.4340),
     "hong kong": (114.1694, 22.3193),
     "香港": (114.1694, 22.3193),
     "北京": (116.4074, 39.9042),
@@ -434,8 +467,13 @@ _CITY_ZH_ALIAS: dict[str, str] = {
     "southern xinjiang": "南疆",
     "urumqi": "乌鲁木齐",
     "altay": "阿勒泰",
+    "aletai": "阿勒泰",
     "fuyun": "富蕴",
     "burqin": "布尔津",
+    "buerjin": "布尔津",
+    "bole": "博乐",
+    "klamayi": "克拉玛依",
+    "kuitun": "奎屯",
     "kanas": "喀纳斯",
     "sailimu": "赛里木湖",
     "yining": "伊宁",
@@ -491,7 +529,9 @@ def _resolve_destination_anchor(destination: str) -> tuple[float, float] | None:
 
 def _destination_radius_km(destination: str) -> float:
     """Return max allowed distance (km) from destination center for POI validation."""
-    lowered = destination.lower().strip()
+    lowered = _normalize_city_for_geocode(destination).lower().strip()
+    if _is_north_xinjiang_destination(lowered):
+        return 780.0
     if any(token in lowered for token in _WIDE_REGION_TOKENS):
         return 1200.0
     return 80.0
@@ -533,6 +573,8 @@ def _effective_route_radius_km(
     logistics: TravelLogistics | None = None,
 ) -> float:
     base = _destination_radius_km(destination)
+    if _is_north_xinjiang_destination(destination):
+        return max(base, 780.0)
     if _is_multi_city_itinerary(destination, timeline_days, logistics):
         return max(base, 1200.0)
     return base
@@ -575,9 +617,15 @@ def _choose_transport_mode(origin: str, destination: str) -> str:
     destination_lower = destination.lower()
     if origin in {"Your city", "你的城市"} or destination in {"Custom Destination", "待定目的地"}:
         return "Best available transfer"
+    if _is_north_xinjiang_destination(destination):
+        return "Flight"
     if any(token in origin_lower for token in ["hong kong", "tokyo", "singapore"]) or any(
         token in destination_lower for token in ["hong kong", "tokyo", "singapore"]
     ):
+        return "Flight"
+    origin_anchor = _resolve_destination_anchor(origin)
+    destination_anchor = _resolve_destination_anchor(destination)
+    if origin_anchor and destination_anchor and _distance_km(origin_anchor, destination_anchor) >= 1500:
         return "Flight"
     origin_is_mainland = any(city in origin_lower for city in MAINLAND_CITY_HINTS) or any(city in origin for city in MAINLAND_CITY_HINTS_ZH)
     destination_is_mainland = any(city in destination_lower for city in MAINLAND_CITY_HINTS) or any(
@@ -750,6 +798,175 @@ def _build_day(day_index: int, destination: str, style: str | None, budget: str 
     return DayPlan(day_index=day_index, title=day_title, theme=theme, events=events)
 
 
+def _north_xinjiang_day_templates() -> list[list[tuple[str, str, str]]]:
+    # (title, location, description)
+    return [
+        [
+            ("天山天池风景区", "昌吉回族自治州阜康市天山天池景区", "从乌鲁木齐出发前往天池，适应高原气候并开启北疆环线。"),
+            ("新疆国际大巴扎", "乌鲁木齐市天山区解放南路8号", "傍晚在大巴扎感受丝路夜市氛围。"),
+        ],
+        [
+            ("可可托海国家地质公园", "阿勒泰地区富蕴县可可托海镇", "北上进入阿勒泰山地，安排全天地质公园深度游。"),
+            ("可可托海三号矿坑", "阿勒泰地区富蕴县可可托海镇", "补充工业遗址与矿业历史打卡。"),
+        ],
+        [
+            ("五彩滩风景区", "阿勒泰地区布尔津县五彩滩景区", "沿额尔齐斯河前往布尔津，日落时段观赏雅丹地貌。"),
+            ("布尔津河堤夜市", "阿勒泰地区布尔津县河堤夜市", "夜间在布尔津补给并休整。"),
+        ],
+        [
+            ("喀纳斯湖景区", "阿勒泰地区布尔津县喀纳斯景区", "进入喀纳斯核心区，安排完整湖区游览。"),
+            ("观鱼台", "阿勒泰地区喀纳斯景区观鱼台", "登高俯瞰湖面与山谷，避免往返折返。"),
+        ],
+        [
+            ("禾木村", "阿勒泰地区布尔津县禾木哈纳斯蒙古族乡", "转场禾木，体验图瓦村落与森林河谷景观。"),
+            ("禾木观景台", "阿勒泰地区禾木景区观景台", "傍晚在观景台完成日落拍摄。"),
+        ],
+        [
+            ("世界魔鬼城", "克拉玛依市乌尔禾区世界魔鬼城景区", "南下乌尔禾，串联地貌景观保持线路单向推进。"),
+            ("乌尔禾胡杨林", "克拉玛依市乌尔禾区胡杨林景区", "补充同片区轻徒步，减少跨区移动。"),
+        ],
+        [
+            ("赛里木湖风景名胜区", "博尔塔拉蒙古自治州博乐市赛里木湖景区", "西行至赛里木湖，全天湖区环线游览。"),
+            ("果子沟大桥", "伊犁哈萨克自治州霍城县连霍高速果子沟大桥", "下山经果子沟进入伊犁河谷。"),
+        ],
+        [
+            ("喀赞其民俗旅游区", "伊犁哈萨克自治州伊宁市喀赞其民俗旅游区", "在伊宁安排人文街区与轻松城市节奏。"),
+            ("六星街", "伊犁哈萨克自治州伊宁市六星街", "同城步行串联，减少重复交通。"),
+        ],
+        [
+            ("新疆维吾尔自治区博物馆", "乌鲁木齐市沙依巴克区西北路132号", "返程回到乌鲁木齐，安排室内文化参观。"),
+            ("红山公园", "乌鲁木齐市水磨沟区红山路", "傍晚轻松观景，保证返程前留足休息时间。"),
+        ],
+        [
+            ("自治区博物馆文创街区", "乌鲁木齐市沙依巴克区西北路132号", "最后一天安排市区收尾，衔接返程航班。"),
+            ("地窝堡机场出发准备", "乌鲁木齐地窝堡国际机场", "预留值机和安检时间，避免末日赶路。"),
+        ],
+    ]
+
+
+_NORTH_XINJIANG_SCENIC_COORDS: dict[str, tuple[float, float]] = {
+    # value = (latitude, longitude)
+    "天山天池风景区": (43.8922, 88.1217),
+    "新疆国际大巴扎": (43.7797, 87.6177),
+    "可可托海国家地质公园": (47.2156, 89.8963),
+    "可可托海三号矿坑": (47.2363, 89.5270),
+    "五彩滩风景区": (48.1258, 86.7082),
+    "布尔津河堤夜市": (48.0606, 86.8726),
+    "喀纳斯湖景区": (48.6934, 86.9861),
+    "观鱼台": (48.7054, 87.0273),
+    "禾木村": (48.4459, 87.1518),
+    "禾木观景台": (48.4436, 87.1489),
+    "世界魔鬼城": (46.1398, 85.7792),
+    "乌尔禾胡杨林": (46.0798, 85.7246),
+    "赛里木湖风景名胜区": (44.6178, 81.1757),
+    "果子沟大桥": (44.3097, 81.0720),
+    "喀赞其民俗旅游区": (43.9122, 81.3302),
+    "六星街": (43.9196, 81.3225),
+    "新疆维吾尔自治区博物馆": (43.8066, 87.5889),
+    "红山公园": (43.8204, 87.6178),
+    "自治区博物馆文创街区": (43.8066, 87.5889),
+    "地窝堡机场出发准备": (43.9071, 87.4742),
+}
+
+
+def _north_xinjiang_scenic_coord(title: str) -> tuple[float, float] | None:
+    return _NORTH_XINJIANG_SCENIC_COORDS.get(title.strip())
+
+
+def _force_north_xinjiang_logistics(logistics: TravelLogistics, *, use_chinese: bool) -> None:
+    logistics.destination = "北疆" if use_chinese else "North Xinjiang"
+    logistics.outbound_transport = "去程航班" if use_chinese else "Outbound flight"
+    logistics.return_transport = "返程航班" if use_chinese else "Return flight"
+
+
+def _enforce_north_xinjiang_loop(
+    timeline_days: list[DayPlan],
+    logistics: TravelLogistics,
+    *,
+    requested_destination: str | None = None,
+) -> None:
+    north_xinjiang_requested = _is_north_xinjiang_destination(logistics.destination) or (
+        bool(requested_destination) and _is_north_xinjiang_destination(str(requested_destination))
+    )
+    if not timeline_days or not north_xinjiang_requested:
+        return
+    language_hint = str(requested_destination) if requested_destination else logistics.destination
+    use_chinese = _should_use_chinese(language_hint, logistics.origin)
+    templates = _north_xinjiang_day_templates()
+    for day in timeline_days:
+        template = templates[min(day.day_index, len(templates) - 1)]
+        preserved = [event for event in day.events if _classify_event(event.title) in {"transport", "hotel"}]
+        scenic_events: list[TimelineEvent] = []
+        start_slots = ["09:30", "14:30"]
+        end_slots = ["12:00", "17:30"]
+        for idx, (title, location, description) in enumerate(template[:2]):
+            coords = _north_xinjiang_scenic_coord(title)
+            scenic_events.append(
+                TimelineEvent(
+                    id=f"d{day.day_index + 1}-nx-s{idx + 1}",
+                    start_time=start_slots[idx],
+                    end_time=end_slots[idx],
+                    title=title,
+                    location=location,
+                    travel_time_from_previous="25 分钟" if use_chinese else "25 min",
+                    cost_estimate=None,
+                    description=description,
+                    image_url=None,
+                    latitude=coords[0] if coords else None,
+                    longitude=coords[1] if coords else None,
+                    risk_flags=[],
+                )
+            )
+        day.events = preserved + scenic_events
+        day.events.sort(key=lambda event: _sort_key(event.start_time))
+
+    _force_north_xinjiang_logistics(logistics, use_chinese=use_chinese)
+    if timeline_days:
+        first_day = timeline_days[0]
+        last_day = timeline_days[-1]
+        for event in first_day.events:
+            if _classify_event(event.title) == "transport":
+                event.title = "抵达乌鲁木齐地窝堡国际机场" if use_chinese else "Arrive at Urumqi Diwopu International Airport"
+                event.location = (
+                    f"{logistics.origin} 至 乌鲁木齐地窝堡国际机场"
+                    if use_chinese
+                    else f"{logistics.origin} to Urumqi Diwopu International Airport"
+                )
+                event.description = "搭乘航班抵达乌鲁木齐，正式开始北疆环线。" if use_chinese else "Fly into Urumqi to start the North Xinjiang loop."
+                break
+        for event in last_day.events:
+            if _classify_event(event.title) == "transport":
+                event.title = "乌鲁木齐地窝堡国际机场返程" if use_chinese else "Return via Urumqi Diwopu International Airport"
+                event.location = (
+                    f"乌鲁木齐地窝堡国际机场 至 {logistics.origin}"
+                    if use_chinese
+                    else f"Urumqi Diwopu International Airport to {logistics.origin}"
+                )
+                event.description = "环线回到乌鲁木齐后返程，形成闭环不绕路。" if use_chinese else "Return home from Urumqi to complete the loop."
+                break
+
+
+def _city_stay_lengths_by_day(
+    timeline_days: list[DayPlan],
+    destination: str,
+) -> dict[int, int]:
+    day_cities: list[str] = []
+    for day in timeline_days:
+        day_cities.append((_day_primary_city(day, destination) or _normalize_city_for_geocode(destination)).strip())
+    lengths: dict[int, int] = {}
+    idx = 0
+    while idx < len(day_cities):
+        city = day_cities[idx]
+        cursor = idx + 1
+        while cursor < len(day_cities) and day_cities[cursor] == city:
+            cursor += 1
+        block = cursor - idx
+        for j in range(idx, cursor):
+            lengths[j] = block
+        idx = cursor
+    return lengths
+
+
 def _default_logistics(parsed: dict[str, str | int | None]) -> TravelLogistics:
     destination = str(parsed.get("destination") or "Custom Destination")
     travelers = int(parsed.get("travelers") or 1)
@@ -899,6 +1116,9 @@ def _extract_price_from_results(results: list[Any]) -> str | None:
             symbol_match = re.search(r"(HK\$|US\$|\$|CNY\s?|RMB\s?|¥)", combined, re.IGNORECASE)
             symbol = symbol_match.group(1).strip() if symbol_match else "$"
             return f"{symbol}{match.group(1)}"
+        yuan_match = re.search(r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*元", combined)
+        if yuan_match:
+            return f"¥{yuan_match.group(1)}"
     return None
 
 
@@ -914,6 +1134,28 @@ def _search_hotel_rates(hotel_name: str, destination: str, check_in_date: dateti
     return SERPER_TRAVEL.search_hotel_rates(hotel_name, destination, check_in_date.strftime("%Y-%m-%d"), num=3)
 
 
+def _transport_search_destination(destination: str) -> str:
+    return "乌鲁木齐" if _is_north_xinjiang_destination(destination) else destination
+
+
+def _estimate_transport_unit_price_rmb(origin: str, destination: str, *, mode: str) -> float:
+    origin_anchor = _resolve_destination_anchor(origin)
+    destination_anchor = _resolve_destination_anchor(destination)
+    distance_km = None
+    if origin_anchor and destination_anchor:
+        distance_km = _distance_km(origin_anchor, destination_anchor)
+    normalized_mode = mode.lower()
+    if normalized_mode == "flight":
+        if distance_km is None:
+            return 1500.0
+        return float(max(700.0, min(2800.0, 380.0 + distance_km * 0.45)))
+    if normalized_mode == "train":
+        if distance_km is None:
+            return 360.0
+        return float(max(120.0, min(1300.0, 40.0 + distance_km * 0.33)))
+    return 120.0
+
+
 def _pick_first_price(values: list[str | None]) -> str | None:
     for value in values:
         if value and _parse_cost_amount(value) is not None:
@@ -927,10 +1169,30 @@ def _set_transport_leg_cost(
     leg: str,
     cost: str | None,
     fallback_cost: str | None = None,
+    label_suffix: str = "",
+    travelers: int = 1,
 ) -> None:
     if not timeline_days:
         return
-    normalized_cost = _normalize_price_to_rmb_label(cost) or fallback_cost or "约¥120"
+    normalized_cost = _normalize_price_to_rmb_label(cost) or fallback_cost
+    if not normalized_cost:
+        return
+    is_approximate = str(normalized_cost).startswith("约")
+    if travelers >= 1:
+        amount = _parse_cost_amount(normalized_cost)
+        if amount is not None:
+            total = round(amount * travelers)
+            unit = round(amount)
+            if "车票" in label_suffix:
+                normalized_cost = f"¥{total}（车票=¥{unit}×{travelers}人）"
+            elif "机票" in label_suffix:
+                normalized_cost = f"¥{total}（机票=¥{unit}×{travelers}人）"
+            else:
+                normalized_cost = f"¥{total}"
+    if is_approximate and not normalized_cost.startswith("约"):
+        normalized_cost = f"约{normalized_cost}"
+    if label_suffix and all(token not in normalized_cost for token in ["车票", "机票", "(transport)"]):
+        normalized_cost = f"{normalized_cost}{label_suffix}"
     leg = leg.lower()
     for day in timeline_days:
         for event in day.events:
@@ -943,6 +1205,24 @@ def _set_transport_leg_cost(
             if leg == "return" and (event.id.endswith("-return") or "return transfer" in lowered or "返回" in event.title or "返程" in event.title):
                 event.cost_estimate = normalized_cost
                 return
+
+
+def _decorate_cost_with_suffix(cost: str, suffix: str) -> str:
+    cleaned = cost.strip()
+    if not cleaned:
+        return cleaned
+    if suffix and suffix in cleaned:
+        return cleaned
+    return f"{cleaned}{suffix}" if suffix else cleaned
+
+
+def _ensure_approximate_prefix(cost: str) -> str:
+    cleaned = cost.strip()
+    if not cleaned:
+        return cleaned
+    if cleaned.startswith("约"):
+        return cleaned
+    return f"约{cleaned}"
 
 
 def _is_valid_reference_url(url: str) -> bool:
@@ -1176,14 +1456,79 @@ def _apply_amap_candidates(
     return warnings
 
 
+def _is_broad_region_hint(value: str | None) -> bool:
+    if not value:
+        return True
+    lowered = _normalize_city_for_geocode(value).lower().strip()
+    if not lowered:
+        return True
+    if any(token in lowered for token in _WIDE_REGION_TOKENS):
+        return True
+    return lowered in {"china", "中国", "mainland", "mainland china", "新疆", "北疆", "南疆"}
+
+
+def _compact_match_text(value: str) -> str:
+    lowered = _normalize_city_for_geocode(value).lower().strip()
+    lowered = re.sub(r"^d\d+[-.、]?\d*[-.、\s]*", "", lowered)
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", lowered)
+
+
+def _text_overlap_score(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    overlap = sum(1 for char in left if char in right)
+    return overlap / max(len(left), len(right), 1)
+
+
+def _fallback_scenic_poi(
+    event: TimelineEvent,
+    city_hints: list[str],
+    destination_center: tuple[float, float] | None,
+    max_radius: float,
+) -> Any | None:
+    if not AMAP_TRAVEL.available():
+        return None
+    query_text = _compact_match_text(f"{event.title} {event.location}")
+    generic_event = _is_generic_scenic_event(event)
+    best_score = float("-inf")
+    best_poi = None
+    for city in city_hints:
+        normalized_city = _normalize_city_for_geocode(city)
+        if not normalized_city or _is_broad_region_hint(normalized_city):
+            continue
+        city_candidates = AMAP_TRAVEL.fetch_candidates(normalized_city).get("attractions", [])
+        for poi in city_candidates[:12]:
+            if poi.latitude is None or poi.longitude is None:
+                continue
+            if destination_center is not None and _distance_km(destination_center, (poi.longitude, poi.latitude)) > max_radius:
+                continue
+            poi_text = _compact_match_text(f"{poi.name} {poi.address}")
+            score = _text_overlap_score(query_text, poi_text)
+            if generic_event:
+                score += 0.22
+            if _compact_match_text(event.location) and _compact_match_text(event.location) in poi_text:
+                score += 0.18
+            if score > best_score:
+                best_score = score
+                best_poi = poi
+    if best_poi is None:
+        return None
+    if best_score >= 0.2 or (generic_event and best_score >= 0.1):
+        return best_poi
+    return None
+
+
 def _hydrate_event_geocodes(destination: str, timeline_days: list[DayPlan], logistics: TravelLogistics) -> None:
     if not AMAP_TRAVEL.available():
         return
     normalized_destination = _normalize_city_for_geocode(destination)
     destination_center = _resolve_destination_anchor(normalized_destination)
     max_radius = _effective_route_radius_km(normalized_destination, timeline_days, logistics)
-    events_to_geocode: list[tuple[TimelineEvent, str, list[str]]] = []
+    events_to_geocode: list[tuple[TimelineEvent, list[str], list[str]]] = []
     for day in timeline_days:
+        day_city_hint = _day_primary_city(day, normalized_destination) or normalized_destination
+        if _is_broad_region_hint(day_city_hint):
+            day_city_hint = normalized_destination
         for event in day.events:
             if _classify_event(event.title) == "transport":
                 event.latitude = None
@@ -1210,38 +1555,79 @@ def _hydrate_event_geocodes(destination: str, timeline_days: list[DayPlan], logi
                 variants.append(event.location)
             variants.append(event.title)
             deduped_variants = [value for value in dict.fromkeys(item.strip() for item in variants if item and item.strip())]
-            city_hint = _extract_city_from_text(f"{event.location} {event.title}") or normalized_destination
-            events_to_geocode.append((event, city_hint, deduped_variants))
+            explicit_city = _extract_city_from_text(f"{event.location} {event.title}")
+            city_candidates = [
+                explicit_city or "",
+                day_city_hint,
+                normalized_destination,
+            ]
+            deduped_cities: list[str] = []
+            for city in city_candidates:
+                normalized_city = _normalize_city_for_geocode(city)
+                if not normalized_city:
+                    continue
+                if normalized_city in deduped_cities:
+                    continue
+                deduped_cities.append(normalized_city)
+            if not deduped_cities:
+                deduped_cities = [normalized_destination]
+            events_to_geocode.append((event, deduped_cities, deduped_variants))
     if not events_to_geocode:
         return
-    query_pairs = list(dict.fromkeys((city, keyword) for _, city, keywords in events_to_geocode for keyword in keywords))
+    query_pairs = list(
+        dict.fromkeys(
+            (city, keyword)
+            for _, cities, keywords in events_to_geocode
+            for city in cities
+            for keyword in keywords
+        )
+    )
     lookup_map: dict[tuple[str, str], Any] = {}
     if query_pairs:
         pois = parallel_map(lambda pair: AMAP_TRAVEL.lookup_place(pair[0], pair[1]), query_pairs)
         lookup_map = {pair: poi for pair, poi in zip(query_pairs, pois)}
     resolved_count = 0
     unresolved: list[str] = []
-    for event, city_hint, keywords in events_to_geocode:
+    for event, city_hints, keywords in events_to_geocode:
         matched = False
-        for keyword in keywords:
-            poi = lookup_map.get((city_hint, keyword))
-            if poi and poi.latitude is not None and poi.longitude is not None:
-                if destination_center is not None:
-                    point = (poi.longitude, poi.latitude)
-                    if _distance_km(destination_center, point) > max_radius:
-                        logger.info(
-                            "[geocode] skip out-of-region point destination=%s keyword=%s dist=%.0fkm max=%skm",
-                            destination,
-                            keyword,
-                            _distance_km(destination_center, point),
-                            max_radius,
-                        )
-                        continue
-                event.latitude = poi.latitude
-                event.longitude = poi.longitude
+        for city in city_hints:
+            for keyword in keywords:
+                poi = lookup_map.get((city, keyword))
+                if poi and poi.latitude is not None and poi.longitude is not None:
+                    if destination_center is not None:
+                        point = (poi.longitude, poi.latitude)
+                        if _distance_km(destination_center, point) > max_radius:
+                            logger.info(
+                                "[geocode] skip out-of-region point destination=%s city=%s keyword=%s dist=%.0fkm max=%skm",
+                                destination,
+                                city,
+                                keyword,
+                                _distance_km(destination_center, point),
+                                max_radius,
+                            )
+                            continue
+                    event.latitude = poi.latitude
+                    event.longitude = poi.longitude
+                    if _classify_event(event.title) == "scenic" and _is_generic_scenic_event(event):
+                        event.title = poi.name
+                        if poi.address:
+                            event.location = poi.address
+                    resolved_count += 1
+                    matched = True
+                    break
+            if matched:
+                break
+        if not matched and _classify_event(event.title) == "scenic":
+            fallback_poi = _fallback_scenic_poi(event, city_hints, destination_center, max_radius)
+            if fallback_poi and fallback_poi.latitude is not None and fallback_poi.longitude is not None:
+                event.latitude = fallback_poi.latitude
+                event.longitude = fallback_poi.longitude
+                if _is_generic_scenic_event(event):
+                    event.title = fallback_poi.name
+                if not event.location or event.location in {"推荐区域", "Recommended area"}:
+                    event.location = fallback_poi.address or fallback_poi.name
                 resolved_count += 1
                 matched = True
-                break
         if not matched and keywords:
             unresolved.append(keywords[0])
     logger.info(
@@ -1261,7 +1647,7 @@ def _build_day_routes(destination: str, timeline_days: list[DayPlan]) -> None:
         ordered_points: list[tuple[float, float]] = []
         labels: list[str] = []
         for event in day.events:
-            if _classify_event(event.title) == "transport":
+            if _classify_event(event.title) != "scenic":
                 continue
             if event.latitude is None or event.longitude is None:
                 continue
@@ -1353,37 +1739,74 @@ def _apply_live_search(
 ) -> tuple[list[ReferenceLink], list[ProviderWarning]]:
     warnings: list[ProviderWarning] = []
     references: list[ReferenceLink] = []
-    schedule_service = _active_search_service()
-    if not schedule_service and not SERPER_TRAVEL.available():
-        return references, warnings
-
     duration_days = max(len(timeline_days), 1)
-    outbound_date, return_date = _default_departure_dates(duration_days)
+    travelers = max(int(logistics.travelers or 1), 1)
     use_chinese = _should_use_chinese(logistics.destination, logistics.origin)
+    transport_search_destination = _transport_search_destination(logistics.destination)
     outbound_lower = logistics.outbound_transport.lower()
     transport_keyword = "flight" if ("flight" in outbound_lower or any(token in logistics.outbound_transport for token in ["航班", "飞机"])) else "train"
+    transport_label_suffix = "（机票）" if (use_chinese and transport_keyword == "flight") else ("（车票）" if use_chinese else " (transport)")
+    schedule_service = _active_search_service()
+    food_events = [event for day in timeline_days for event in day.events if _classify_event(event.title) == "food"]
+
+    if not schedule_service and not SERPER_TRAVEL.available():
+        estimated_unit = _estimate_transport_unit_price_rmb(
+            logistics.origin,
+            transport_search_destination,
+            mode="flight" if transport_keyword == "flight" else "train",
+        )
+        fallback_transport_cost = f"约¥{round(estimated_unit)}"
+        _set_transport_leg_cost(
+            timeline_days,
+            leg="outbound",
+            cost=None,
+            fallback_cost=fallback_transport_cost,
+            label_suffix=transport_label_suffix,
+            travelers=travelers,
+        )
+        _set_transport_leg_cost(
+            timeline_days,
+            leg="return",
+            cost=None,
+            fallback_cost=fallback_transport_cost,
+            label_suffix=transport_label_suffix,
+            travelers=travelers,
+        )
+        nightly_fallback = 420.0
+        stay_lengths = _city_stay_lengths_by_day(timeline_days, logistics.destination)
+        for day in timeline_days:
+            stay_days = max(stay_lengths.get(day.day_index, 1), 1)
+            hotel_total_label = _ensure_approximate_prefix(_format_currency(nightly_fallback * stay_days))
+            if use_chinese:
+                hotel_total_amount = f"{hotel_total_label}（房费=¥{round(nightly_fallback)}×{stay_days}天）"
+            else:
+                hotel_total_amount = _decorate_cost_with_suffix(hotel_total_label, " (room)")
+            for event in day.events:
+                kind = _classify_event(event.title)
+                if kind == "hotel":
+                    event.cost_estimate = hotel_total_amount
+        return references, warnings
+
+    outbound_date, return_date = _default_departure_dates(duration_days)
     transport_site = "google.com/travel/flights" if transport_keyword == "flight" else "12306"
     if use_chinese:
         outbound_query = (
-            f"site:{transport_site} {logistics.origin} 到 {logistics.destination} "
+            f"site:{transport_site} {logistics.origin} 到 {transport_search_destination} "
             f"{outbound_date.strftime('%Y-%m-%d')} {'机票 航班 起飞 到达' if transport_keyword == 'flight' else '高铁 动车 出发 到达'}"
         )
         return_query = (
-            f"site:{transport_site} {logistics.destination} 到 {logistics.origin} "
+            f"site:{transport_site} {transport_search_destination} 到 {logistics.origin} "
             f"{return_date.strftime('%Y-%m-%d')} {'机票 航班 起飞 到达' if transport_keyword == 'flight' else '高铁 动车 出发 到达'}"
         )
     else:
         outbound_query = (
-            f"site:{transport_site} {logistics.origin} to {logistics.destination} "
+            f"site:{transport_site} {logistics.origin} to {transport_search_destination} "
             f"{outbound_date.strftime('%Y-%m-%d')} {transport_keyword} departure arrival time"
         )
         return_query = (
-            f"site:{transport_site} {logistics.destination} to {logistics.origin} "
+            f"site:{transport_site} {transport_search_destination} to {logistics.origin} "
             f"{return_date.strftime('%Y-%m-%d')} {transport_keyword} departure arrival time"
         )
-    scenic_events = [event for day in timeline_days for event in day.events if _classify_event(event.title) == "scenic"]
-    food_events = [event for day in timeline_days for event in day.events if _classify_event(event.title) == "food"]
-
     task_defs: list[tuple[str, Any, tuple[Any, ...]]] = []
     if schedule_service:
         hotel_query = (
@@ -1407,10 +1830,10 @@ def _apply_live_search(
                     schedule_service.search,
                     (
                         (
-                            f"site:google.com/travel/flights {logistics.origin} 到 {logistics.destination} "
+                            f"site:google.com/travel/flights {logistics.origin} 到 {transport_search_destination} "
                             f"{outbound_date.strftime('%Y-%m-%d')} 航班 起飞 到达"
                             if use_chinese
-                            else f"site:google.com/travel/flights {logistics.origin} to {logistics.destination} "
+                            else f"site:google.com/travel/flights {logistics.origin} to {transport_search_destination} "
                             f"{outbound_date.strftime('%Y-%m-%d')} flight departure arrival time"
                         ),
                         1,
@@ -1421,10 +1844,10 @@ def _apply_live_search(
                     schedule_service.search,
                     (
                         (
-                            f"site:google.com/travel/flights {logistics.destination} 到 {logistics.origin} "
+                            f"site:google.com/travel/flights {transport_search_destination} 到 {logistics.origin} "
                             f"{return_date.strftime('%Y-%m-%d')} 航班 起飞 到达"
                             if use_chinese
-                            else f"site:google.com/travel/flights {logistics.destination} to {logistics.origin} "
+                            else f"site:google.com/travel/flights {transport_search_destination} to {logistics.origin} "
                             f"{return_date.strftime('%Y-%m-%d')} flight departure arrival time"
                         ),
                         1,
@@ -1436,20 +1859,12 @@ def _apply_live_search(
     # Dedicated Serper functions for flights/hotels (origin, destination, date based).
     task_defs.extend(
         [
-            ("flight_options_outbound", _search_flight_options, (logistics.origin, logistics.destination, outbound_date)),
-            ("flight_options_return", _search_flight_options, (logistics.destination, logistics.origin, return_date)),
+            ("flight_options_outbound", _search_flight_options, (logistics.origin, transport_search_destination, outbound_date)),
+            ("flight_options_return", _search_flight_options, (transport_search_destination, logistics.origin, return_date)),
             ("hotel_rates", _search_hotel_rates, (logistics.hotel_name, logistics.destination, outbound_date)),
         ]
     )
 
-    for event in scenic_events[:2]:
-        if schedule_service:
-            poi_query = (
-                f"{event.title} {logistics.destination} 门票 开放时间"
-                if use_chinese
-                else f"{event.title} {logistics.destination} tickets opening hours"
-            )
-            task_defs.append((f"poi_{event.id}", schedule_service.search, (poi_query, 1)))
     for event in food_events:
         if schedule_service:
             food_query = (
@@ -1507,38 +1922,51 @@ def _apply_live_search(
     return_price_raw = _extract_price_from_results(return_results) or _pick_first_price([option.price for option in return_options])
     outbound_price = _normalize_price_to_rmb_label(outbound_price_raw)
     return_price = _normalize_price_to_rmb_label(return_price_raw)
-    fallback_transport_cost = "约¥120"
-    if transport_keyword == "flight":
-        fallback_transport_cost = "约¥1200"
-    elif transport_keyword == "train":
-        fallback_transport_cost = "约¥320"
+    estimated_unit = _estimate_transport_unit_price_rmb(
+        logistics.origin,
+        transport_search_destination,
+        mode="flight" if transport_keyword == "flight" else "train",
+    )
+    fallback_transport_cost = f"约¥{round(estimated_unit)}"
 
-    _set_transport_leg_cost(timeline_days, leg="outbound", cost=outbound_price, fallback_cost=fallback_transport_cost)
-    _set_transport_leg_cost(timeline_days, leg="return", cost=return_price, fallback_cost=fallback_transport_cost)
+    _set_transport_leg_cost(
+        timeline_days,
+        leg="outbound",
+        cost=outbound_price,
+        fallback_cost=fallback_transport_cost,
+        label_suffix=transport_label_suffix,
+        travelers=travelers,
+    )
+    _set_transport_leg_cost(
+        timeline_days,
+        leg="return",
+        cost=return_price,
+        fallback_cost=fallback_transport_cost,
+        label_suffix=transport_label_suffix,
+        travelers=travelers,
+    )
 
     hotel_price_raw = _extract_price_from_results(hotel_results) or _pick_first_price([rate.nightly_price for rate in hotel_rates])
-    hotel_price = _normalize_price_to_rmb_label(hotel_price_raw)
-    if hotel_price:
-        for day in timeline_days:
-            for event in day.events:
-                if _classify_event(event.title) == "hotel":
-                    event.cost_estimate = hotel_price
-                    break
-    else:
-        for day in timeline_days:
-            for event in day.events:
-                if _classify_event(event.title) == "hotel" and not event.cost_estimate:
-                    event.cost_estimate = "约¥420"
-                    break
+    hotel_nightly_amount = _parse_cost_amount(hotel_price_raw)
+    if hotel_nightly_amount is None:
+        hotel_nightly_amount = 420.0
+    stay_lengths = _city_stay_lengths_by_day(timeline_days, logistics.destination)
+    for day in timeline_days:
+        stay_days = max(stay_lengths.get(day.day_index, 1), 1)
+        total_hotel_amount = _format_currency(hotel_nightly_amount * stay_days, "¥")
+        if not _normalize_price_to_rmb_label(hotel_price_raw):
+            total_hotel_amount = _ensure_approximate_prefix(total_hotel_amount)
+        if use_chinese:
+            total_hotel_amount = f"{total_hotel_amount}（房费=¥{round(hotel_nightly_amount)}×{stay_days}天）"
+        else:
+            total_hotel_amount = _decorate_cost_with_suffix(total_hotel_amount, " (room)")
+        for event in day.events:
+            if _classify_event(event.title) == "hotel":
+                event.cost_estimate = total_hotel_amount
     for item in hotel_results[:1]:
         references.append(ReferenceLink(title=item.title, url=item.link, label="酒店搜索" if use_chinese else "Hotel search"))
     for rate in hotel_rates[:1]:
         references.append(ReferenceLink(title=rate.title, url=rate.link, label="酒店价格" if use_chinese else "Hotel rate"))
-
-    for event in scenic_events[:2]:
-        poi_results = result_map.get(f"poi_{event.id}", [])
-        for item in poi_results[:1]:
-            references.append(ReferenceLink(title=item.title, url=item.link, label="景点信息" if use_chinese else "POI details"))
 
     for event in food_events:
         food_results = result_map.get(f"food_{event.id}", [])
@@ -1555,21 +1983,16 @@ def _apply_live_search(
 
 
 def _ensure_cost_estimates(timeline_days: list[DayPlan]) -> None:
-    def _default_cost_label(event: TimelineEvent) -> str:
+    def _default_cost_label(event: TimelineEvent) -> str | None:
         kind = _classify_event(event.title)
         if kind == "hotel":
             return "约¥420"
         if kind == "food":
             return "约¥90"
         if kind == "scenic":
-            return "约¥120"
+            return None
         if kind == "transport":
-            lowered = event.title.lower()
-            if any(token in lowered for token in ["flight", "plane"]) or any(token in event.title for token in ["航班", "飞机"]):
-                return "约¥1200"
-            if any(token in lowered for token in ["train", "rail", "high-speed"]) or any(token in event.title for token in ["高铁", "动车", "火车"]):
-                return "约¥320"
-            return "约¥80"
+            return None
         return "约¥60"
 
     for day in timeline_days:
@@ -1593,14 +2016,225 @@ def _assign_food_images(timeline_days: list[DayPlan]) -> None:
 
 
 def _assign_scenic_images(destination: str, timeline_days: list[DayPlan]) -> None:
+    # Scenic images should come from live lookup/search, not static cache pools.
+    return
+
+
+def _backfill_missing_scenic_images_with_serper(
+    destination: str,
+    timeline_days: list[DayPlan],
+    references: list[VisualReference],
+) -> list[VisualReference]:
+    if not SERPER_TRAVEL.available():
+        return references
+    existing_urls: set[str] = {
+        ref.image_url for ref in references if ref.image_url
+    }
+    use_chinese = _should_use_chinese(destination)
     for day in timeline_days:
         for event in day.events:
-            if _classify_event(event.title) != "scenic":
+            if _classify_event(event.title) != "scenic" or event.image_url:
                 continue
-            if event.image_url:
+            queries: list[str] = []
+            if use_chinese:
+                queries.append(f"{event.title} {destination} 景区 实拍")
+                if event.location and event.location != destination:
+                    queries.append(f"{event.location} {destination} 景点 实拍")
+            else:
+                queries.append(f"{event.title} {destination} landmark photo")
+                if event.location and event.location != destination:
+                    queries.append(f"{event.location} {destination} attraction")
+
+            for query in queries:
+                try:
+                    items = SERPER_TRAVEL.search_images_live(query, num=4)
+                except Exception as exc:
+                    logger.warning("[serper] live scenic image search failed event=%s query=%s err=%s", event.title, query, exc)
+                    continue
+                chosen = next(
+                    (
+                        item
+                        for item in items
+                        if item.image_url and item.source_url and _is_valid_reference_url(item.source_url)
+                    ),
+                    None,
+                )
+                if not chosen:
+                    continue
+                event.image_url = chosen.image_url
+                if chosen.image_url not in existing_urls:
+                    existing_urls.add(chosen.image_url)
+                    references.append(
+                        VisualReference(title=event.title, image_url=chosen.image_url, source_url=chosen.source_url)
+                    )
+                break
+    return references
+
+
+def _image_match_score(event: TimelineEvent, destination: str, title: str, source_url: str | None) -> int:
+    source = f"{title} {source_url or ''}".lower()
+    score = 0
+    lowered_title = event.title.lower().strip()
+    lowered_location = event.location.lower().strip()
+    lowered_destination = destination.lower().strip()
+    if lowered_title and lowered_title in source:
+        score += 12
+    if lowered_location and lowered_location in source:
+        score += 4
+    if lowered_destination and lowered_destination in source:
+        score += 2
+    zh_tokens = re.findall(r"[\u4e00-\u9fff]{2,8}", f"{event.title} {event.location}")
+    en_tokens = [
+        token.lower()
+        for token in re.split(r"[\s,/()_-]+", f"{event.title} {event.location}")
+        if len(token) >= 3
+    ]
+    for token in zh_tokens + en_tokens:
+        if token in source:
+            score += 3
+    return score
+
+
+def _scenic_image_cache_key(destination: str, event: TimelineEvent) -> str:
+    return "|".join(
+        [
+            _normalize_city_for_geocode(destination).lower().strip(),
+            event.title.strip().lower(),
+        ]
+    )
+
+
+def _get_cached_scenic_payload(destination: str, event: TimelineEvent) -> dict[str, Any] | None:
+    cache_key = _scenic_image_cache_key(destination, event)
+    payload = get_cached_json("scenic.image", cache_key, max_age_seconds=SCENIC_IMAGE_CACHE_TTL_SECONDS)
+    return payload if isinstance(payload, dict) else None
+
+
+def _get_cached_scenic_image(destination: str, event: TimelineEvent) -> VisualReference | None:
+    payload = _get_cached_scenic_payload(destination, event)
+    if not payload or str(payload.get("status") or "").lower() == "miss":
+        return None
+    image_url = str(payload.get("image_url") or "").strip()
+    source_url = str(payload.get("source_url") or "").strip()
+    title = str(payload.get("title") or event.title).strip() or event.title
+    if not image_url or not source_url or not _is_valid_reference_url(source_url):
+        return None
+    return VisualReference(title=title, image_url=image_url, source_url=source_url)
+
+
+def _set_cached_scenic_image(destination: str, event: TimelineEvent, reference: VisualReference) -> None:
+    if not reference.image_url or not reference.source_url:
+        return
+    cache_key = _scenic_image_cache_key(destination, event)
+    set_cached_json(
+        "scenic.image",
+        cache_key,
+        {
+            "title": reference.title,
+            "image_url": reference.image_url,
+            "source_url": reference.source_url,
+        },
+    )
+
+
+def _set_cached_scenic_miss(destination: str, event: TimelineEvent) -> None:
+    cache_key = _scenic_image_cache_key(destination, event)
+    set_cached_json("scenic.image", cache_key, {"status": "miss"})
+
+
+def _scenic_image_query(destination: str, event: TimelineEvent, *, use_chinese: bool) -> str:
+    if use_chinese:
+        if "颐和园" in event.title:
+            return "颐和园 北京 景区 实拍"
+        if "故宫" in event.title:
+            return "故宫博物院 北京 景区 实拍"
+        return f"{event.title} {destination} 景区 实拍"
+    return f"{event.title} {destination} landmark photo"
+
+
+def _replace_scenic_images_with_serper_live(
+    destination: str,
+    timeline_days: list[DayPlan],
+    references: list[VisualReference],
+) -> list[VisualReference]:
+    if not SERPER_TRAVEL.available():
+        return references
+    deduped_references: list[VisualReference] = []
+    seen_urls: set[str] = set()
+    use_chinese = _should_use_chinese(destination)
+    query_results_cache: dict[tuple[str, str], list[Any]] = {}
+    event_choice_cache: dict[str, Any | None] = {}
+    scenic_events = [event for day in timeline_days for event in day.events if _classify_event(event.title) == "scenic"]
+    for event in scenic_events:
+        fallback_image = _scenic_image_for(f"{destination}-{event.title}-{event.location}")
+        cached_payload = _get_cached_scenic_payload(destination, event)
+        if cached_payload and str(cached_payload.get("status") or "").lower() == "miss":
+            event.image_url = event.image_url or fallback_image
+            continue
+        cached_reference = _get_cached_scenic_image(destination, event)
+        if cached_reference:
+            event.image_url = cached_reference.image_url
+            if cached_reference.image_url not in seen_urls:
+                seen_urls.add(cached_reference.image_url)
+                deduped_references.append(cached_reference)
+            continue
+
+        # If the event already has an image in memory, keep it and skip API calls.
+        if event.image_url:
+            continue
+
+        event_key = f"{event.title}|{event.location}"
+        if event_key in event_choice_cache:
+            chosen_cached = event_choice_cache[event_key]
+            if chosen_cached is None:
+                event.image_url = event.image_url or fallback_image
                 continue
-            seed = f"{destination}-{event.title}-{event.location}"
-            event.image_url = SCENIC_IMAGE_POOL[_stable_index(seed, len(SCENIC_IMAGE_POOL))]
+            event.image_url = chosen_cached.image_url
+            if chosen_cached.image_url not in seen_urls:
+                seen_urls.add(chosen_cached.image_url)
+                deduped_references.append(
+                    VisualReference(title=event.title, image_url=chosen_cached.image_url, source_url=chosen_cached.source_url)
+                )
+            continue
+
+        query = _scenic_image_query(destination, event, use_chinese=use_chinese)
+        best_item = None
+        best_score = -1
+        items = query_results_cache.get(("cached", query))
+        if items is None:
+            items = SERPER_TRAVEL.search_images_cached_only(query, num=8)
+            query_results_cache[("cached", query)] = items
+        if not items:
+            items = query_results_cache.get(("live", query))
+            if items is None:
+                try:
+                    items = SERPER_TRAVEL.search_images_live(query, num=8)
+                except Exception as exc:
+                    logger.warning("[serper] live image replace failed event=%s query=%s err=%s", event.title, query, exc)
+                    items = []
+                query_results_cache[("live", query)] = items
+        for item in items:
+            if not item.image_url or not item.source_url or not _is_valid_reference_url(item.source_url):
+                continue
+            score = _image_match_score(event, destination, item.title, item.source_url)
+            if score > best_score:
+                best_score = score
+                best_item = item
+
+        # Require a minimum relevance to avoid mismatched attractions.
+        if best_item and best_score >= 6:
+            event_choice_cache[event_key] = best_item
+            event.image_url = best_item.image_url
+            reference = VisualReference(title=event.title, image_url=best_item.image_url, source_url=best_item.source_url)
+            _set_cached_scenic_image(destination, event, reference)
+            if best_item.image_url not in seen_urls:
+                seen_urls.add(best_item.image_url)
+                deduped_references.append(reference)
+        else:
+            event_choice_cache[event_key] = None
+            event.image_url = event.image_url or fallback_image
+            _set_cached_scenic_miss(destination, event)
+    return deduped_references
 
 
 def _extract_city_tag(value: str) -> str | None:
@@ -1627,46 +2261,6 @@ def _day_primary_city(day: DayPlan, destination: str) -> str | None:
         if hint:
             return _normalize_city_for_geocode(hint)
     return _normalize_city_for_geocode(destination)
-
-
-def _inject_cross_city_hotel_events(timeline_days: list[DayPlan], logistics: TravelLogistics) -> None:
-    if len(timeline_days) < 2:
-        return
-    use_chinese = _should_use_chinese(logistics.destination, logistics.origin)
-    previous_city = _day_primary_city(timeline_days[0], logistics.destination)
-    for day in timeline_days[1:]:
-        current_city = _day_primary_city(day, logistics.destination)
-        if not current_city or not previous_city or current_city == previous_city:
-            previous_city = current_city or previous_city
-            continue
-        if any(_classify_event(event.title) == "hotel" for event in day.events):
-            previous_city = current_city
-            continue
-        suggested_hotel = logistics.hotel_name
-        if AMAP_TRAVEL.available():
-            city_hotels = AMAP_TRAVEL.fetch_candidates(current_city).get("hotels", [])
-            if city_hotels:
-                suggested_hotel = city_hotels[0].name
-        day.events.append(
-            TimelineEvent(
-                id=f"d{day.day_index + 1}-city-hotel",
-                start_time="14:30",
-                end_time="15:10",
-                title="换城入住" if use_chinese else "City Check-in",
-                location=suggested_hotel,
-                travel_time_from_previous="20 分钟" if use_chinese else "20 min",
-                cost_estimate=None,
-                description=(
-                    f"今日已跨城至{current_city}，建议在新城市办理入住后再继续行程。"
-                    if use_chinese
-                    else f"The route moved into {current_city}; re-check in before continuing the day."
-                ),
-                image_url=None,
-                risk_flags=[],
-            )
-        )
-        day.events.sort(key=lambda item: _sort_key(item.start_time))
-        previous_city = current_city
 
 
 def _choose_leg_mode(
@@ -1725,6 +2319,17 @@ def _annotate_route_travel_times(destination: str, timeline_days: list[DayPlan])
                 and event.latitude is not None
                 and event.longitude is not None
             ):
+                straight_km = _distance_km(
+                    (previous_visit.longitude, previous_visit.latitude),
+                    (event.longitude, event.latitude),
+                )
+                if straight_km >= 350:
+                    if use_chinese:
+                        event.travel_time_from_previous = "跨城交通：建议拆分行程或改为航班/高铁"
+                    else:
+                        event.travel_time_from_previous = "Cross-city transfer: split this leg or use flight/rail"
+                    previous_visit = event
+                    continue
                 preferred_mode = _choose_leg_mode(previous_visit, event)
                 mode_label_zh, minutes, route_detail = AMAP_TRAVEL.estimate_travel_leg(
                     (previous_visit.longitude, previous_visit.latitude),
@@ -1756,19 +2361,16 @@ def _inject_logistics_events(timeline_days: list[DayPlan], logistics: TravelLogi
     first_day = timeline_days[0]
     last_day = timeline_days[-1]
     use_chinese = _should_use_chinese(logistics.destination, logistics.origin)
+    first_day_has_transport = any(_classify_event(event.title) == "transport" for event in first_day.events)
+    last_day_has_transport = any(_classify_event(event.title) == "transport" for event in last_day.events)
 
-    if not any(
-        "arrival" in event.title.lower()
-        or "flight" in event.title.lower()
-        or any(token in event.title for token in ["抵达", "接驳", "出发", "航班"])
-        for event in first_day.events
-    ):
+    if not first_day_has_transport:
         first_day.events.append(
             TimelineEvent(
                 id=f"d{first_day.day_index + 1}-arrival",
                 start_time="07:00",
                 end_time="08:30",
-                title="到达接驳" if use_chinese else "Arrival Transfer",
+                title="去程交通" if use_chinese else "Outbound Transport",
                 location=f"{logistics.origin} 至 {logistics.destination}" if use_chinese else f"{logistics.origin} to {logistics.destination}",
                 travel_time_from_previous="-",
                 cost_estimate=None,
@@ -1805,18 +2407,13 @@ def _inject_logistics_events(timeline_days: list[DayPlan], logistics: TravelLogi
                 risk_flags=[],
             )
         )
-    if not any(
-        "return" in event.title.lower()
-        or "departure" in event.title.lower()
-        or any(token in event.title for token in ["返程", "返回", "离开"])
-        for event in last_day.events
-    ):
+    if not last_day_has_transport:
         last_day.events.append(
             TimelineEvent(
                 id=f"d{last_day.day_index + 1}-return",
                 start_time="19:00",
                 end_time="21:00",
-                title="返程接驳" if use_chinese else "Return Transfer",
+                title="返程交通" if use_chinese else "Return Transport",
                 location=f"{logistics.destination} 至 {logistics.origin}" if use_chinese else f"{logistics.destination} to {logistics.origin}",
                 travel_time_from_previous="25 分钟" if use_chinese else "25 min",
                 cost_estimate=None,
@@ -1832,6 +2429,47 @@ def _inject_logistics_events(timeline_days: list[DayPlan], logistics: TravelLogi
 
     for day in timeline_days:
         day.events.sort(key=lambda event: _sort_key(event.start_time))
+
+
+def _dedupe_terminal_transport_events(timeline_days: list[DayPlan]) -> None:
+    if not timeline_days:
+        return
+
+    def _pick_canonical(events: list[TimelineEvent], *, prefer_arrival: bool) -> TimelineEvent | None:
+        if not events:
+            return None
+        generic_titles = {"到达接驳", "arrival transfer", "返程接驳", "return transfer", "去程交通", "outbound transport", "返程交通", "return transport"}
+        concrete = [event for event in events if event.title.strip().lower() not in generic_titles]
+        if concrete:
+            return sorted(concrete, key=lambda item: _sort_key(item.start_time))[0]
+        for event in events:
+            lowered = event.title.lower()
+            if prefer_arrival and ("arrival transfer" in lowered or any(token in event.title for token in ["到达", "抵达", "接驳", "出发", "去程"])):
+                return event
+            if (not prefer_arrival) and ("return transfer" in lowered or any(token in event.title for token in ["返程", "返回", "离开"])):
+                return event
+        return sorted(events, key=lambda item: _sort_key(item.start_time))[0]
+
+    first_day = timeline_days[0]
+    last_day = timeline_days[-1]
+    first_transports = [event for event in first_day.events if _classify_event(event.title) == "transport"]
+    last_transports = [event for event in last_day.events if _classify_event(event.title) == "transport"]
+
+    keep_first = _pick_canonical(first_transports, prefer_arrival=True)
+    keep_last = _pick_canonical(last_transports, prefer_arrival=False)
+
+    if len(first_transports) > 1 and keep_first:
+        first_day.events = [event for event in first_day.events if _classify_event(event.title) != "transport" or event.id == keep_first.id]
+    if len(last_transports) > 1 and keep_last:
+        last_day.events = [event for event in last_day.events if _classify_event(event.title) != "transport" or event.id == keep_last.id]
+
+    if keep_first and keep_first.id != f"d{first_day.day_index + 1}-arrival":
+        keep_first.id = f"d{first_day.day_index + 1}-arrival"
+    if keep_last and keep_last.id != f"d{last_day.day_index + 1}-return":
+        keep_last.id = f"d{last_day.day_index + 1}-return"
+
+    first_day.events.sort(key=lambda event: _sort_key(event.start_time))
+    last_day.events.sort(key=lambda event: _sort_key(event.start_time))
 
 
 def _search_event_visual(destination: str, event: TimelineEvent) -> VisualReference | None:
@@ -1898,12 +2536,10 @@ def _enrich_visuals(destination: str, timeline_days: list[DayPlan]) -> list[Visu
             try:
                 # 15s timeout per image search chain (which tries up to 3 queries)
                 res = future.result(timeout=15)
-                if res and res.image_url:
+                if res and res.image_url and res.source_url and _is_valid_reference_url(res.source_url):
                     if res.image_url not in seen_urls:
                         seen_urls.add(res.image_url)
                         references.append(res)
-                        if len(references) >= 12:
-                            return references
             except Exception as exc:
                 # Assuming 'logger' is defined elsewhere in the module
                 import logging
@@ -1972,11 +2608,12 @@ def _normalize_price_to_rmb_label(price: str | None) -> str | None:
 
 
 def _estimate_transport_one_way(logistics: TravelLogistics) -> float:
+    destination_for_search = _transport_search_destination(logistics.destination)
     lowered = logistics.outbound_transport.lower()
     if any(token in lowered for token in ["flight", "plane", "air"]) or any(token in logistics.outbound_transport for token in ["航班", "飞机"]):
-        return 220.0
+        return _estimate_transport_unit_price_rmb(logistics.origin, destination_for_search, mode="flight")
     if any(token in lowered for token in ["rail", "train", "high-speed"]) or any(token in logistics.outbound_transport for token in ["高铁", "动车", "火车"]):
-        return 70.0
+        return _estimate_transport_unit_price_rmb(logistics.origin, destination_for_search, mode="train")
     if "ferry" in lowered or any(token in logistics.outbound_transport for token in ["轮渡", "船"]):
         return 55.0
     return 90.0
@@ -2024,37 +2661,43 @@ def _estimate_budget_summary(
     notes: list[str] = []
     currency_symbol = "¥"
     hotel_amount = None
+    hotel_total_override = None
+    labeled_hotel_totals: list[float] = []
     for day in timeline_days:
         for event in day.events:
-            if _classify_event(event.title) == "hotel":
-                hotel_amount = _parse_cost_amount(event.cost_estimate)
-                if hotel_amount is not None:
-                    break
-        if hotel_amount is not None:
-            break
+            if _classify_event(event.title) != "hotel":
+                continue
+            amount = _parse_cost_amount(event.cost_estimate)
+            if amount is None:
+                continue
+            lowered_cost = str(event.cost_estimate or "").lower()
+            if any(token in lowered_cost for token in ["房费", "room)", "stay total"]):
+                labeled_hotel_totals.append(amount)
+            elif hotel_amount is None:
+                hotel_amount = amount
+    if labeled_hotel_totals:
+        hotel_total_override = sum(labeled_hotel_totals)
+        hotel_amount = hotel_total_override / max(duration_days, 1)
     if hotel_amount is None:
         hotel_amount = 120.0
         notes.append("酒店价格为预估值。" if use_chinese else "Hotel price uses approximate estimate.")
 
-    scenic_food_totals_by_day: list[float] = []
-    transport_by_day: list[float] = [0.0 for _ in timeline_days]
+    ticket_totals_by_day: list[float] = []
     for day in timeline_days:
         day_total = 0.0
         for event in day.events:
             kind = _classify_event(event.title)
             amount = _parse_cost_amount(event.cost_estimate)
             if amount is None:
-                if kind == "food":
-                    amount = 18.0
-                elif kind == "scenic":
-                    amount = 25.0
+                if kind == "scenic":
+                    amount = 0.0
                 elif kind == "transport":
                     amount = None
                 else:
                     amount = 0.0
-            if kind in {"food", "scenic"}:
+            if kind == "scenic":
                 day_total += amount * travelers
-        scenic_food_totals_by_day.append(day_total)
+        ticket_totals_by_day.append(day_total)
 
     outbound_event_price = _find_transport_leg_price(timeline_days, "outbound")
     return_event_price = _find_transport_leg_price(timeline_days, "return")
@@ -2062,8 +2705,8 @@ def _estimate_budget_summary(
         notes.append("去程交通费用为预估值。" if use_chinese else "Outbound transport price uses estimate.")
     if return_event_price is None:
         notes.append("返程交通费用为预估值。" if use_chinese else "Return transport price uses estimate.")
-    outbound_total = (outbound_event_price or _estimate_transport_one_way(logistics)) * travelers
-    return_total = (return_event_price or _estimate_transport_one_way(logistics)) * travelers
+    outbound_total = outbound_event_price if outbound_event_price is not None else (_estimate_transport_one_way(logistics) * travelers)
+    return_total = return_event_price if return_event_price is not None else (_estimate_transport_one_way(logistics) * travelers)
 
     flight_total = 0.0
     rail_total = 0.0
@@ -2089,39 +2732,16 @@ def _estimate_budget_summary(
     else:
         city_transport_total += return_total
 
-    for day in timeline_days:
-        for event in day.events:
-            if _classify_event(event.title) != "transport":
-                continue
-            if event.id.endswith("-arrival") or event.id.endswith("-return"):
-                continue
-            amount = _parse_cost_amount(event.cost_estimate)
-            if amount is None:
-                if _transport_bucket(f"{event.title} {event.location}") == "car_rental":
-                    amount = 65.0
-                else:
-                    amount = 12.0
-            bucket = _transport_bucket(f"{event.title} {event.location}")
-            total = amount * travelers
-            if bucket == "flight":
-                flight_total += total
-            elif bucket == "rail":
-                rail_total += total
-            elif bucket == "car_rental":
-                car_rental_total += total
-            else:
-                city_transport_total += total
-            if day.day_index < len(transport_by_day):
-                transport_by_day[day.day_index] += total
-
-    hotel_total = hotel_amount * room_count * max(duration_days - 1, 1)
-    event_total = sum(scenic_food_totals_by_day)
+    hotel_total = hotel_amount * room_count * duration_days
+    if hotel_total_override is not None:
+        hotel_total = hotel_total_override
+    ticket_total = sum(ticket_totals_by_day)
     transport_total = flight_total + rail_total + city_transport_total + car_rental_total
-    trip_total_value = round(transport_total + hotel_total + event_total)
+    trip_total_value = round(transport_total + hotel_total + ticket_total)
+    hotel_daily_share = hotel_total / max(duration_days, 1)
     current_day_value = round(
-        (scenic_food_totals_by_day[0] if scenic_food_totals_by_day else 0.0)
-        + (hotel_amount * room_count)
-        + (transport_by_day[0] if transport_by_day else 0.0)
+        (ticket_totals_by_day[0] if ticket_totals_by_day else 0.0)
+        + hotel_daily_share
         + outbound_total
     )
 
@@ -2154,6 +2774,7 @@ def _estimate_budget_summary(
         city_transport_total_estimate=_format_currency(city_transport_total, currency_symbol),
         car_rental_total_estimate=_format_currency(car_rental_total, currency_symbol),
         hotel_total_estimate=_format_currency(hotel_total, currency_symbol),
+        ticket_total_estimate=_format_currency(ticket_total, currency_symbol),
         notes=list(dict.fromkeys(notes)),
     )
 
@@ -2247,6 +2868,7 @@ def _planning_system_prompt() -> str:
         "- Group attractions that are geographically close together on the same day.\n"
         "- Within each day, order events so the route flows in one direction without backtracking.\n"
         "- Minimize total transit time by visiting nearby POIs consecutively.\n"
+        "- When the itinerary enters a new city, add a same-day hotel check-in event in that city and choose a reasonable hotel name for that city.\n"
         "- Each day must have 4-6 meaningful events spanning from ~08:00 to ~21:00.\n"
         "- Spread activities evenly across the day with reasonable gaps (1-2 hours per event).\n"
         "- Do NOT leave large empty blocks; cover morning, afternoon, and evening.\n"
@@ -2263,6 +2885,7 @@ def _planning_draft_system_prompt() -> str:
         "Do not add routine lunch or dinner filler unless the trip is explicitly food-focused.\n"
         "Group attractions by geographic area or district for each day.\n"
         "Order events within each day to flow geographically without backtracking across the city.\n"
+        "If you move into a new city, add a same-day hotel check-in in that city with a realistic hotel name.\n"
         "Each day must have 4-6 events covering morning (~08:00) through evening (~21:00)."
     )
 
@@ -2353,6 +2976,7 @@ def _build_draft_llm_prompt(query: str, parsed: dict[str, str | int | None], int
         "Visit nearby POIs consecutively to minimize transit time between stops. "
         "Spread activities evenly across morning, afternoon, and evening — no large empty gaps. "
         "Travel logistics should be practical. You MUST select a centrally located hotel near the destination's primary attractions to minimize daily commuting. "
+        "If the route enters a different city than the previous day, include a same-day hotel check-in event in that new city and use a plausible local hotel name. "
         "Pick a transport mode first, then provide realistic departure and arrival time windows. "
         "If an exact price is unknown, write approximate. "
         "CRITICAL: If the destination is within Greater China (Mainland, Hong Kong, Macau, Taiwan), you MUST output the `destination`, `title`, and `location` fields in Simplified Chinese (e.g., '北京' instead of 'Beijing', '故宫' instead of 'Forbidden City'), even if the user query is in English. This is strictly required for the map API to geocode correctly."
@@ -2380,6 +3004,7 @@ def _build_refinement_prompt(
         "- STRICTLY reorder events within each day based on actual geographic proximity to create a logical, linear route without any backtracking.\n"
         "- Ensure each day has 4-6 events from ~08:00 to ~21:00, spread evenly.\n"
         "- Group geographically close POIs on the same day.\n"
+        "- If the route enters a new city, add a hotel check-in event in that city on the same day and choose a realistic local hotel.\n"
         "- Choose a centrally located hotel from the grounding context if applicable, near the main attractions.\n"
         "- Keep only meaningful food stops (famous local specialties, not routine meals).\n"
         "- CRITICAL: If the destination is within Greater China (Mainland, Hong Kong, Macau, Taiwan), you MUST output the `destination`, `title`, and `location` fields in Simplified Chinese (e.g., '北京' instead of 'Beijing', '故宫' instead of 'Forbidden City'). This is strictly required for the map API to geocode correctly.\n"
@@ -2398,6 +3023,8 @@ def _trip_from_fallback(
     prefetched_attractions: list[tuple[str, str]] | None = None,
 ) -> TripState:
     destination = str(parsed["destination"])
+    query_text = str(base_fields.get("query") or "")
+    north_xinjiang_requested = _is_north_xinjiang_destination(destination) or _is_north_xinjiang_destination(query_text)
     origin = str(parsed.get("origin") or "Your city")
     use_chinese = _should_use_chinese(destination, origin)
     duration_days = int(parsed["duration_days"])
@@ -2419,12 +3046,16 @@ def _trip_from_fallback(
         )
     )
     _inject_logistics_events(timeline_days, logistics)
+    _enforce_north_xinjiang_loop(
+        timeline_days,
+        logistics,
+        requested_destination=destination if north_xinjiang_requested else None,
+    )
+    _dedupe_terminal_transport_events(timeline_days)
     _prune_routine_food_events(timeline_days, style if isinstance(style, str) else None)
-    _hydrate_event_geocodes(destination, timeline_days, logistics)
-    _inject_cross_city_hotel_events(timeline_days, logistics)
-    _hydrate_event_geocodes(destination, timeline_days, logistics)
-    _annotate_route_travel_times(destination, timeline_days)
-    _build_day_routes(destination, timeline_days)
+    _hydrate_event_geocodes(logistics.destination, timeline_days, logistics)
+    _annotate_route_travel_times(logistics.destination, timeline_days)
+    _build_day_routes(logistics.destination, timeline_days)
     _ensure_cost_estimates(timeline_days)
     _assign_food_images(timeline_days)
     live_references, live_warnings = _apply_live_search(logistics, timeline_days)
@@ -2442,14 +3073,13 @@ def _trip_from_fallback(
                 severity="medium",
             )
         )
-    image_references = _enrich_visuals(destination, timeline_days)
-    _assign_scenic_images(destination, timeline_days)
+    image_references = _replace_scenic_images_with_serper_live(logistics.destination, timeline_days, [])
     trip_fields = {**base_fields, "provider_warnings": provider_warnings}
     return TripState(
         **trip_fields,
         view_state="partial_itinerary_with_warnings" if provider_warnings else "itinerary_ready",
         plan_summary=PlanSummary(
-            headline=f"{duration_days}天{destination}行程已生成" if use_chinese else f"{duration_days}-day {destination} plan ready",
+            headline=f"{duration_days}天{logistics.destination}行程已生成" if use_chinese else f"{duration_days}-day {logistics.destination} plan ready",
             body=(
                 "行程已包含抵达、住宿、每日节奏与返程，可直接执行。"
                 if use_chinese
@@ -2469,13 +3099,13 @@ def _trip_from_fallback(
         ),
         conflict_warnings=[],
         map_preview=MapPreview(
-            route_label=f"{destination}完整路线" if use_chinese else f"{destination} full-trip route",
+            route_label=f"{logistics.destination}完整路线" if use_chinese else f"{logistics.destination} full-trip route",
             stops=[event.location for event in timeline_days[0].events[:4]],
             total_transit_time="约2小时10分钟" if use_chinese else "2h 10m",
             image_references=image_references,
         ),
         travel_logistics=logistics,
-        reference_links=_merge_reference_links(live_references, _reference_links(destination)),
+        reference_links=_merge_reference_links(live_references, _reference_links(logistics.destination)),
         planning_trace=[],
     )
 
@@ -2497,6 +3127,8 @@ def _trip_from_model(
     style_value = parsed.get("style") if isinstance(parsed.get("style"), str) else None
     budget_value = parsed.get("budget") if isinstance(parsed.get("budget"), str) else None
     destination_value = str(parsed.get("destination") or "Custom Destination")
+    query_text = str(base_fields.get("query") or "")
+    north_xinjiang_requested = _is_north_xinjiang_destination(destination_value) or _is_north_xinjiang_destination(query_text)
     origin_value = str(parsed.get("origin") or "Your city")
     use_chinese = _should_use_chinese(destination_value, origin_value)
     model_fallback_day_count = 0
@@ -2566,6 +3198,8 @@ def _trip_from_model(
             )
         ),
     )
+    if north_xinjiang_requested:
+        _force_north_xinjiang_logistics(logistics, use_chinese=use_chinese)
     provider_warnings = list(base_fields["provider_warnings"])
     if model_fallback_day_count > 0:
         provider_warnings.append(
@@ -2589,16 +3223,19 @@ def _trip_from_model(
         )
     )
     _inject_logistics_events(timeline_days, logistics)
+    _enforce_north_xinjiang_loop(
+        timeline_days,
+        logistics,
+        requested_destination=destination_value if north_xinjiang_requested else None,
+    )
+    _dedupe_terminal_transport_events(timeline_days)
     _prune_routine_food_events(timeline_days, parsed.get("style") if isinstance(parsed.get("style"), str) else None)
-    _hydrate_event_geocodes(logistics.destination, timeline_days, logistics)
-    _inject_cross_city_hotel_events(timeline_days, logistics)
     _hydrate_event_geocodes(logistics.destination, timeline_days, logistics)
     _annotate_route_travel_times(logistics.destination, timeline_days)
     _build_day_routes(logistics.destination, timeline_days)
     _ensure_cost_estimates(timeline_days)
     _assign_food_images(timeline_days)
-    image_references = _enrich_visuals(logistics.destination, timeline_days)
-    _assign_scenic_images(logistics.destination, timeline_days)
+    image_references = _replace_scenic_images_with_serper_live(logistics.destination, timeline_days, [])
 
     reference_links = _sanitize_reference_links([
         ReferenceLink(
@@ -2616,16 +3253,6 @@ def _trip_from_model(
     computed_budget = _estimate_budget_summary(parsed, logistics, timeline_days)
     reference_links = _merge_reference_links(live_references, reference_links, _reference_links(logistics.destination))
 
-    def _budget_value(key: str, default: str | None) -> str | None:
-        raw = budget_payload.get(key)
-        candidate = default if raw in (None, "") else str(raw)
-        if candidate is None:
-            return None
-        normalized = _normalize_price_to_rmb_label(candidate)
-        if normalized:
-            return normalized
-        return default if default is not None else candidate
-
     trip_fields = {**base_fields, "provider_warnings": provider_warnings}
     return TripState(
         **trip_fields,
@@ -2638,17 +3265,18 @@ def _trip_from_model(
         clarification_questions=[],
         timeline_days=timeline_days,
         budget_summary=BudgetSummary(
-            trip_total_estimate=_budget_value("trip_total_estimate", computed_budget.trip_total_estimate) or computed_budget.trip_total_estimate,
-            current_day_estimate=_budget_value("current_day_estimate", computed_budget.current_day_estimate) or computed_budget.current_day_estimate,
+            trip_total_estimate=computed_budget.trip_total_estimate,
+            current_day_estimate=computed_budget.current_day_estimate,
             budget_status=str(budget_payload.get("budget_status", computed_budget.budget_status))
             if str(budget_payload.get("budget_status", computed_budget.budget_status)) in {"on_track", "watch", "over"}
             else computed_budget.budget_status,
-            transport_total_estimate=_budget_value("transport_total_estimate", computed_budget.transport_total_estimate),
-            flight_total_estimate=_budget_value("flight_total_estimate", computed_budget.flight_total_estimate),
-            rail_total_estimate=_budget_value("rail_total_estimate", computed_budget.rail_total_estimate),
-            city_transport_total_estimate=_budget_value("city_transport_total_estimate", computed_budget.city_transport_total_estimate),
-            car_rental_total_estimate=_budget_value("car_rental_total_estimate", computed_budget.car_rental_total_estimate),
-            hotel_total_estimate=_budget_value("hotel_total_estimate", computed_budget.hotel_total_estimate),
+            transport_total_estimate=computed_budget.transport_total_estimate,
+            flight_total_estimate=computed_budget.flight_total_estimate,
+            rail_total_estimate=computed_budget.rail_total_estimate,
+            city_transport_total_estimate=computed_budget.city_transport_total_estimate,
+            car_rental_total_estimate=computed_budget.car_rental_total_estimate,
+            hotel_total_estimate=computed_budget.hotel_total_estimate,
+            ticket_total_estimate=computed_budget.ticket_total_estimate,
             notes=[
                 str(item)
                 for item in (

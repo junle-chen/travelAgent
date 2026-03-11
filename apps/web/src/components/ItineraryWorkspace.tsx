@@ -7,7 +7,6 @@ import { DayRouteMap } from './DayRouteMap';
 import { DayTabs } from './DayTabs';
 import { ItineraryHeader } from './ItineraryHeader';
 import { MapPreviewCard } from './MapPreviewCard';
-import { MemorySummaryPanel } from './MemorySummaryPanel';
 import { ReferenceLinksPanel } from './ReferenceLinksPanel';
 import { Timeline } from './Timeline';
 import { TravelLogisticsCard } from './TravelLogisticsCard';
@@ -32,7 +31,7 @@ export function ItineraryWorkspace({ trip }: ItineraryWorkspaceProps) {
       <ItineraryHeader trip={trip} />
       <ConflictBanner warnings={warnings} />
       <TravelLogisticsCard trip={trip} />
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
         <div className="space-y-4 overflow-hidden">
           <DayTabs days={trip.timeline_days} activeDay={day.day_index} onChange={setActiveDay} />
           <Timeline day={day} />
@@ -41,7 +40,6 @@ export function ItineraryWorkspace({ trip }: ItineraryWorkspaceProps) {
         </div>
         <div className="space-y-4">
           <BudgetCounter trip={trip} />
-          <MemorySummaryPanel trip={trip} />
           <TravelSearchPanel trip={trip} />
           <MapPreviewCard trip={trip} />
         </div>

@@ -48,6 +48,13 @@ const CITY_ANCHORS: Record<string, [number, number]> = {
   hangzhou: [120.1551, 30.2741],
   xiamen: [118.0894, 24.4798],
   chengdu: [104.0665, 30.5728],
+  altay: [88.1396, 47.8484],
+  burqin: [86.8619, 48.2011],
+  buerjin: [86.8619, 48.2011],
+  fuyun: [89.5268, 46.9944],
+  bole: [82.0722, 44.9060],
+  klamayi: [84.8892, 45.5799],
+  kuitun: [84.9, 44.4269],
   'hong kong': [114.1694, 22.3193],
   北京: [116.4074, 39.9042],
   上海: [121.4737, 31.2304],
@@ -56,6 +63,20 @@ const CITY_ANCHORS: Record<string, [number, number]> = {
   杭州: [120.1551, 30.2741],
   厦门: [118.0894, 24.4798],
   成都: [104.0665, 30.5728],
+  阿勒泰: [88.1396, 47.8484],
+  阿勒泰地区: [88.1396, 47.8484],
+  布尔津: [86.8619, 48.2011],
+  布尔津县: [86.8619, 48.2011],
+  富蕴: [89.5268, 46.9944],
+  富蕴县: [89.5268, 46.9944],
+  博乐: [82.0722, 44.9060],
+  博乐市: [82.0722, 44.9060],
+  克拉玛依: [84.8892, 45.5799],
+  奎屯: [84.9, 44.4269],
+  霍城: [80.8788, 44.0477],
+  霍城县: [80.8788, 44.0477],
+  新源: [83.2585, 43.434],
+  新源县: [83.2585, 43.434],
   香港: [114.1694, 22.3193],
 };
 
@@ -63,7 +84,20 @@ function isRouteEvent(title: string) {
   const lowered = title.toLowerCase();
   const englishTransport = ['flight', 'train', 'transfer', 'arrival', 'return', 'ferry'];
   const chineseTransport = ['出发', '到达', '抵达', '前往', '返回', '返程', '接驳', '航班', '高铁', '动车', '火车', '乘车', '中转', '机场', '车站'];
-  return !englishTransport.some((token) => lowered.includes(token)) && !chineseTransport.some((token) => title.includes(token));
+  const englishHotel = ['hotel', 'check-in', 'hostel'];
+  const chineseHotel = ['酒店', '入住', '民宿', '换城入住'];
+  const englishFood = ['breakfast', 'lunch', 'dinner', 'restaurant', 'cafe', 'market'];
+  const chineseFood = ['早餐', '午餐', '晚餐', '餐厅', '美食', '夜市', '小吃'];
+  if (englishTransport.some((token) => lowered.includes(token)) || chineseTransport.some((token) => title.includes(token))) {
+    return false;
+  }
+  if (englishHotel.some((token) => lowered.includes(token)) || chineseHotel.some((token) => title.includes(token))) {
+    return false;
+  }
+  if (englishFood.some((token) => lowered.includes(token)) || chineseFood.some((token) => title.includes(token))) {
+    return false;
+  }
+  return true;
 }
 
 function toMinutes(value: string) {
@@ -382,15 +416,7 @@ export function DayRouteMap({ days, destination }: DayRouteMapProps) {
   }, [destination, routeStops]);
 
   const dedupedStops = useMemo(() => {
-    const deduped: RouteStop[] = [];
-    for (const stop of filteredStops) {
-      const prev = deduped[deduped.length - 1];
-      if (prev && prev.latitude === stop.latitude && prev.longitude === stop.longitude) {
-        continue;
-      }
-      deduped.push(stop);
-    }
-    return deduped.map((stop, index) => ({ ...stop, index }));
+    return filteredStops.map((stop, index) => ({ ...stop, index }));
   }, [filteredStops]);
   const previousSameDayByIndex = useMemo(() => {
     const byIndex = new Map<number, RouteStop | undefined>();
@@ -535,7 +561,11 @@ export function DayRouteMap({ days, destination }: DayRouteMapProps) {
             ? await fetchTransitSummary(amapKey, prev, curr, transitCity)
             : { minutes: null, lineSummary: null };
           const km = distanceKm([prev.longitude, prev.latitude], [curr.longitude, curr.latitude]);
-          const driveMins = drivingMinutes ?? estimateByDistanceKm(km);
+          const heuristicDriveMins = estimateByDistanceKm(km);
+          let driveMins = drivingMinutes ?? heuristicDriveMins;
+          if (km > 80 && driveMins < Math.round(heuristicDriveMins * 0.55)) {
+            driveMins = heuristicDriveMins;
+          }
           const walkMins = walkingMinutes;
 
           let summary = `驾车：${driveMins}分钟`;

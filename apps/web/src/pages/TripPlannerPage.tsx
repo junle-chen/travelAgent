@@ -31,22 +31,57 @@ const FALLBACK_MODELS: ModelInfo[] = [
   },
 ];
 
+const PLANNER_STATE_STORAGE_KEY = 'travel-agent-planner-state-v1';
+
+interface PersistedPlannerState {
+  selectedModelId: ModelId;
+  interactionMode: InteractionMode;
+  query: string;
+  trip: TripState | null;
+  viewState: ViewState;
+}
+
+function loadPersistedPlannerState(): PersistedPlannerState | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(PLANNER_STATE_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    return JSON.parse(raw) as PersistedPlannerState;
+  } catch {
+    return null;
+  }
+}
+
+function persistPlannerState(state: PersistedPlannerState) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(PLANNER_STATE_STORAGE_KEY, JSON.stringify(state));
+}
+
 export function TripPlannerPage() {
+  const [persistedState] = useState<PersistedPlannerState | null>(() => loadPersistedPlannerState());
   const [models, setModels] = useState<ModelInfo[]>(FALLBACK_MODELS);
-  const [selectedModelId, setSelectedModelId] = useState<ModelId>('gpt-5.1-chat');
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>('direct');
-  const [query, setQuery] = useState('');
-  const [trip, setTrip] = useState<TripState | null>(null);
+  const [selectedModelId, setSelectedModelId] = useState<ModelId>(persistedState?.selectedModelId ?? 'gpt-5.1-chat');
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>(persistedState?.interactionMode ?? 'direct');
+  const [query, setQuery] = useState(persistedState?.query ?? '');
+  const [trip, setTrip] = useState<TripState | null>(persistedState?.trip ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [viewState, setViewState] = useState<ViewState>('idle');
+  const [viewState, setViewState] = useState<ViewState>(persistedState?.viewState ?? 'idle');
 
   useEffect(() => {
     void (async () => {
       try {
         const response = await fetchModels();
         setModels(response.models);
-        setSelectedModelId(response.default_model_id);
+        setSelectedModelId((previous) =>
+          response.models.some((model) => model.model_id === previous) ? previous : response.default_model_id,
+        );
       } catch {
         setModels(FALLBACK_MODELS);
       }
@@ -57,6 +92,10 @@ export function TripPlannerPage() {
     () => ({ model_id: selectedModelId, api_key: null, base_url: null }),
     [selectedModelId],
   );
+
+  useEffect(() => {
+    persistPlannerState({ selectedModelId, interactionMode, query, trip, viewState });
+  }, [interactionMode, query, selectedModelId, trip, viewState]);
 
   const submitNewTrip = async () => {
     if (!query.trim()) {
@@ -94,6 +133,7 @@ export function TripPlannerPage() {
     }
     setLoading(true);
     setError(null);
+    setViewState('submitting');
     try {
       const response = await postTripMessage(trip.trip_id, nextMessage, modelConfig, interactionMode);
       setTrip(response.trip);
@@ -111,15 +151,29 @@ export function TripPlannerPage() {
     }
   };
 
+  const startNewChat = () => {
+    setTrip(null);
+    setQuery('');
+    setError(null);
+    setViewState('idle');
+  };
+
   const showHero =
     !trip ||
     viewState === 'idle' ||
-    viewState === 'submitting' ||
     viewState === 'needs_clarification' ||
     viewState === 'error_recoverable';
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,#fef7eb_0%,#f7f2e8_45%,#edf6f4_100%)] text-ink">
+      <button
+        type="button"
+        onClick={startNewChat}
+        className="fixed left-4 top-4 z-30 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-4 py-2 text-sm font-semibold text-ink shadow-sm transition hover:bg-white"
+      >
+        <span className="text-base leading-none">+</span>
+        <span>New chat</span>
+      </button>
       {showHero ? (
         <HeroComposer
           query={query}

@@ -87,6 +87,7 @@ export interface TripState {
     city_transport_total_estimate?: string | null;
     car_rental_total_estimate?: string | null;
     hotel_total_estimate?: string | null;
+    ticket_total_estimate?: string | null;
     notes?: string[];
   };
   memory_summary: {

@@ -69,6 +69,7 @@ class BudgetSummary(BaseModel):
     city_transport_total_estimate: str | None = None
     car_rental_total_estimate: str | None = None
     hotel_total_estimate: str | None = None
+    ticket_total_estimate: str | None = None
     notes: list[str] = Field(default_factory=list)
 
 

@@ -6,26 +6,30 @@ interface MapPreviewCardProps {
   trip: TripState;
 }
 
-const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=1200&q=80';
-
-function VisualCard({ title, imageUrl, sourceUrl }: { title: string; imageUrl?: string | null; sourceUrl?: string | null }) {
-  const [src, setSrc] = useState(imageUrl || FALLBACK_IMAGE);
+function VisualCard({ title, imageUrl, sourceUrl }: { title: string; imageUrl: string; sourceUrl: string }) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) {
+    return null;
+  }
 
   return (
     <a
-      href={sourceUrl || undefined}
-      target={sourceUrl ? '_blank' : undefined}
-      rel={sourceUrl ? 'noreferrer' : undefined}
+      href={sourceUrl}
+      target="_blank"
+      rel="noreferrer"
       className="block overflow-hidden rounded-3xl border border-slate-200 bg-slate-50"
     >
-      <img src={src} alt={title} className="h-32 w-full object-cover" onError={() => setSrc(FALLBACK_IMAGE)} />
+      <img src={imageUrl} alt={title} className="h-32 w-full object-cover" onError={() => setHidden(true)} />
       <div className="px-3 py-2 text-sm font-semibold text-ink">{title}</div>
     </a>
   );
 }
 
 export function MapPreviewCard({ trip }: MapPreviewCardProps) {
-  const references = trip.map_preview.image_references ?? [];
+  const references = (trip.map_preview.image_references ?? []).filter(
+    (reference): reference is { title: string; image_url: string; source_url: string } =>
+      Boolean(reference.image_url && reference.source_url)
+  );
 
   return (
     <section className="rounded-[1.75rem] border border-white/70 bg-white/90 p-5 shadow-sm">
@@ -55,7 +59,7 @@ export function MapPreviewCard({ trip }: MapPreviewCardProps) {
           ))
         ) : (
           <div className="rounded-3xl border border-dashed border-slate-200 px-4 py-5 text-sm text-slate-500">
-            No visual matches yet. Once the itinerary contains recognizable places, matching images will appear here.
+            No visuals with valid image sources yet.
           </div>
         )}
       </div>

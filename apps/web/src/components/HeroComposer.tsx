@@ -23,9 +23,7 @@ export function HeroComposer(props: HeroComposerProps) {
       <div className="mb-8 text-center">
         <p className="text-sm font-semibold uppercase tracking-[0.25em] text-lagoon">Clarification-first travel planning</p>
         <h1 className="mt-4 font-display text-5xl text-ink sm:text-6xl">Plan your next trip</h1>
-        <p className="mx-auto mt-4 max-w-3xl text-lg leading-8 text-slate-600">
-          Direct mode returns a fast draft immediately. Planning mode asks for a full brief first, then builds a more grounded itinerary.
-        </p>
+        <p className="mx-auto mt-4 max-w-3xl text-lg leading-8 text-slate-500">plan a 4-day trip to beijing from shanghai</p>
       </div>
       <div className="mb-5 w-full max-w-6xl">
         <QueryComposer
@@ -33,7 +31,6 @@ export function HeroComposer(props: HeroComposerProps) {
           onChange={onQueryChange}
           onSubmit={onSubmit}
           loading={loading}
-          interactionMode={interactionMode}
           leftControls={
             <>
               <ModelSelector models={models} selectedModelId={selectedModelId} onChange={onModelChange} />

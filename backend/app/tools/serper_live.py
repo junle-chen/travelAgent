@@ -95,10 +95,7 @@ class SerperTravelService:
         logger.info("[serper] search results=%s", len(results))
         return results
 
-    @lru_cache(maxsize=256)
-    def search_images(self, query: str, num: int = 3) -> list[ImageItem]:
-        logger.info("[serper] image_search q=%s num=%s", query, num)
-        payload = self._post(SERPER_IMAGES_URL, {"q": query, "num": num})
+    def _parse_image_results(self, payload: dict[str, object], query: str, num: int) -> list[ImageItem]:
         images = payload.get("images", [])
         if not isinstance(images, list):
             return []
@@ -111,8 +108,32 @@ class SerperTravelService:
             title = str(item.get("title") or item.get("source") or query).strip()
             if image_url:
                 results.append(ImageItem(title=title, image_url=image_url, source_url=source_url))
+        return results
+
+    @lru_cache(maxsize=256)
+    def search_images(self, query: str, num: int = 3) -> list[ImageItem]:
+        logger.info("[serper] image_search q=%s num=%s", query, num)
+        payload = self._post(SERPER_IMAGES_URL, {"q": query, "num": num})
+        results = self._parse_image_results(payload, query, num)
         logger.info("[serper] image_search results=%s", len(results))
         return results
+
+    def search_images_live(self, query: str, num: int = 3) -> list[ImageItem]:
+        logger.info("[serper] image_search_live q=%s num=%s", query, num)
+        payload = self._post(SERPER_IMAGES_URL, {"q": query, "num": num}, use_cache=False)
+        results = self._parse_image_results(payload, query, num)
+        logger.info("[serper] image_search_live results=%s", len(results))
+        return results
+
+    def search_images_cached_only(self, query: str, num: int = 3) -> list[ImageItem]:
+        config = self.settings.get_tool_env_config(["SERPER_API_KEY"])
+        if not config.api_key:
+            return []
+        cache_key = json.dumps({"url": SERPER_IMAGES_URL, "payload": {"q": query, "num": num}}, ensure_ascii=False, sort_keys=True)
+        cached = get_cached_json("serper.post", cache_key, max_age_seconds=SERPER_CACHE_TTL_SECONDS)
+        if not isinstance(cached, dict):
+            return []
+        return self._parse_image_results(cached, query, num)
 
     def extract_schedule(self, query: str) -> str | None:
         results = self.search(query, num=3)
@@ -202,14 +223,15 @@ class SerperTravelService:
         symbol = symbol_match.group(1).strip() if symbol_match else "$"
         return f"{symbol}{match.group(1)}"
 
-    def _post(self, url: str, payload: dict[str, object]) -> dict[str, object]:
+    def _post(self, url: str, payload: dict[str, object], *, use_cache: bool = True) -> dict[str, object]:
         config = self.settings.get_tool_env_config(["SERPER_API_KEY"])
         if not config.api_key:
             return {}
         cache_key = json.dumps({"url": url, "payload": payload}, ensure_ascii=False, sort_keys=True)
-        cached = get_cached_json("serper.post", cache_key, max_age_seconds=SERPER_CACHE_TTL_SECONDS)
-        if isinstance(cached, dict):
-            return cached
+        if use_cache:
+            cached = get_cached_json("serper.post", cache_key, max_age_seconds=SERPER_CACHE_TTL_SECONDS)
+            if isinstance(cached, dict):
+                return cached
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
             url,
@@ -224,7 +246,8 @@ class SerperTravelService:
         try:
             with request.urlopen(req, timeout=8) as response:
                 data = json.loads(response.read().decode("utf-8"))
-                set_cached_json("serper.post", cache_key, data)
+                if use_cache:
+                    set_cached_json("serper.post", cache_key, data)
                 return data
         except (error.URLError, error.HTTPError, json.JSONDecodeError) as exc:
             logger.warning("[serper] request failed url=%s error=%s", url, exc)

@@ -27,7 +27,6 @@ export function StickyFollowupComposer(props: StickyFollowupComposerProps) {
           onSubmit={onSubmit}
           loading={loading}
           compact
-          interactionMode={interactionMode}
           leftControls={
             <>
               <ModelSelector models={models} selectedModelId={selectedModelId} onChange={onModelChange} />
