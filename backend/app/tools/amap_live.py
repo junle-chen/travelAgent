@@ -44,6 +44,19 @@ CITY_ZH_ALIASES: dict[str, str] = {
 }
 
 EN_KEYWORD_ZH_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    (r"\bneighborhood walk\b", "城市漫步"),
+    (r"\blocal culture stop\b", "人文街区"),
+    (r"\bsignature landmark\b", "地标景点"),
+    (r"\boutbound transport\b", "去程交通"),
+    (r"\breturn transfer\b", "返程交通"),
+    (r"\barrival transfer\b", "抵达交通"),
+    (r"\bhotel check[\s-]?in\b", "酒店入住"),
+    (r"\bhighlights?\b", "亮点"),
+    (r"\bhistoric district\b", "历史街区"),
+    (r"\bcustom destination\b", "目的地"),
+    (r"\byour city\b", "出发地"),
+    (r"\bactivity\s*\d+\b", "景点"),
+    (r"\bday\s*\d+\b", ""),
     (r"\bcheck[\s-]?in\b", "入住"),
     (r"\bhotel\b", "酒店"),
     (r"\bhostel\b", "青旅"),
@@ -121,6 +134,8 @@ class AmapTravelService:
             return None
         normalized_city = self._normalize_city(city)
         normalized_keywords = self._normalize_keywords(keywords)
+        if not normalized_keywords:
+            return None
         query_variants = [normalized_keywords]
         if normalized_city and normalized_city not in normalized_keywords:
             query_variants.append(f"{normalized_city} {normalized_keywords}")
@@ -135,23 +150,15 @@ class AmapTravelService:
 
         scored_candidates: list[tuple[float, AmapPoi, str, bool]] = []
         for query in query_variants:
-            city_limited = self._search(normalized_city, query, config.api_key, offset=8, city_limit=True)
+            used_city_limit = bool(normalized_city)
+            city_limited = self._search(normalized_city or city, query, config.api_key, offset=8, city_limit=used_city_limit)
             city_best = self._pick_best_poi(city_limited, query, normalized_city)
             if city_best:
                 score, poi = city_best
-                scored_candidates.append((score, poi, query, True))
+                scored_candidates.append((score, poi, query, used_city_limit))
                 # Exact or near-exact local hit can return immediately.
                 if score >= 9.0:
                     return poi
-
-        # If local matches are weak or absent, run one global fallback pass.
-        if not scored_candidates or max(item[0] for item in scored_candidates) < 6.0:
-            for query in query_variants[:2]:
-                global_hits = self._search(normalized_city, query, config.api_key, offset=8, city_limit=False)
-                global_best = self._pick_best_poi(global_hits, query, normalized_city)
-                if global_best:
-                    score, poi = global_best
-                    scored_candidates.append((score, poi, query, False))
 
         if not scored_candidates:
             return None
@@ -726,6 +733,7 @@ class AmapTravelService:
         cleaned = keywords.strip()
         if not cleaned:
             return cleaned
+        raw_lowered = cleaned.lower()
         cleaned = re.sub(r"^d\d+[-.、]?\d*[-.、\s]*", "", cleaned, flags=re.IGNORECASE)
         lowered = cleaned.lower()
         for english, chinese in CITY_ZH_ALIASES.items():
@@ -735,8 +743,33 @@ class AmapTravelService:
         for pattern, replacement in EN_KEYWORD_ZH_REPLACEMENTS:
             cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
         cleaned = cleaned.replace("/", " ").replace("_", " ")
+        cleaned = re.sub(r"[()（）\[\],;:]+", " ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        return cleaned
+        if re.search(r"[A-Za-z]", cleaned):
+            # AMap queries should be Chinese to reduce cross-language mismatch.
+            cleaned = re.sub(r"\b[A-Za-z]+\b", " ", cleaned)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not re.search(r"[\u4e00-\u9fff]", cleaned):
+            cleaned = AmapTravelService._fallback_keyword_type(raw_lowered)
+        return cleaned or "景点"
+
+    @staticmethod
+    def _fallback_keyword_type(lowered: str) -> str:
+        if any(token in lowered for token in ("hotel", "check-in", "checkin", "hostel", "stay")):
+            return "酒店"
+        if any(token in lowered for token in ("restaurant", "food", "cafe", "dinner", "lunch", "breakfast", "night market")):
+            return "餐厅"
+        if any(token in lowered for token in ("airport", "station", "rail", "train", "bus", "transfer")):
+            return "交通枢纽"
+        if any(token in lowered for token in ("museum",)):
+            return "博物馆"
+        if any(token in lowered for token in ("park",)):
+            return "公园"
+        if any(token in lowered for token in ("bridge",)):
+            return "大桥"
+        if any(token in lowered for token in ("lake",)):
+            return "湖"
+        return "景点"
 
     @staticmethod
     def _clean_name(name: str) -> str:

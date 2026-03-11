@@ -81,3 +81,18 @@ class Database:
         if row is None:
             return None
         return TripState.model_validate(json.loads(row["state_json"]))
+
+    def list_trips(self, *, limit: int = 50) -> list[TripState]:
+        capped = max(1, min(limit, 200))
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT state_json FROM trips ORDER BY updated_at DESC LIMIT ?",
+                (capped,),
+            ).fetchall()
+        trips: list[TripState] = []
+        for row in rows:
+            try:
+                trips.append(TripState.model_validate(json.loads(row["state_json"])))
+            except Exception:
+                continue
+        return trips

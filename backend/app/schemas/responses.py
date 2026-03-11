@@ -20,3 +20,17 @@ class HealthResponse(BaseModel):
 
 class TripResponse(BaseModel):
     trip: TripState
+
+
+class TripSummaryResponse(BaseModel):
+    trip_id: str
+    query: str
+    headline: str
+    destination: str
+    view_state: str
+    updated_at: str
+    created_at: str
+
+
+class TripListResponse(BaseModel):
+    trips: list[TripSummaryResponse]

@@ -6,7 +6,7 @@ from app.schemas.domain import ClarificationQuestion
 REQUIRED_FIELDS = [
     ("destination", "Where do you want to go?", ["Tokyo", "Kyoto", "Paris"]),
     ("duration_days", "How many days is the trip?", ["3 days", "4 days", "5 days"]),
-    ("budget", "What budget range should I optimize for?", ["Budget", "Mid-range", "Luxury"]),
+    ("budget", "Choose a budget level:", ["low", "balance", "high"]),
 ]
 
 

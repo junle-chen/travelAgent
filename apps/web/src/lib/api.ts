@@ -1,4 +1,4 @@
-import type { InteractionMode, ModelConfigRequest, ModelsResponse, TripResponse } from './models';
+import type { InteractionMode, ModelConfigRequest, ModelsResponse, TripListResponse, TripResponse } from './models';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
@@ -37,6 +37,14 @@ export function createTrip(
     method: 'POST',
     body: JSON.stringify({ query, interaction_mode: interactionMode, model_config: modelConfig }),
   });
+}
+
+export function fetchTrips(limit = 50): Promise<TripListResponse> {
+  return request<TripListResponse>(`/api/trips?limit=${encodeURIComponent(String(limit))}`);
+}
+
+export function fetchTrip(tripId: string): Promise<TripResponse> {
+  return request<TripResponse>(`/api/trips/${tripId}`);
 }
 
 export function postTripMessage(

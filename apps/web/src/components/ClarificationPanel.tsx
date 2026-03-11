@@ -10,11 +10,12 @@ interface ClarificationPanelProps {
 }
 
 const PREFERENCE_PRESETS = ['Relaxed', 'Food focused', 'Family friendly', 'Packed'];
+const BUDGET_PRESETS = ['low', 'balance', 'high'] as const;
 
 export function ClarificationPanel({ questions, loading, interactionMode, onSubmit }: ClarificationPanelProps) {
   const [answers, setAnswers] = useState<Record<string, string>>({
     travelers: '2',
-    budget: '1500',
+    budget: 'balance',
     style: 'Relaxed',
   });
 
@@ -38,7 +39,6 @@ export function ClarificationPanel({ questions, loading, interactionMode, onSubm
   if (interactionMode === 'planning') {
     const has = (id: string) => requiredIds.includes(id);
     const travelerCount = Math.max(1, Number(answers.travelers || '2'));
-    const budgetValue = Math.max(100, Number(answers.budget || '1500'));
 
     return (
       <section className="rounded-[2rem] border border-white/70 bg-white/92 p-6 shadow-panel backdrop-blur">
@@ -98,27 +98,21 @@ export function ClarificationPanel({ questions, loading, interactionMode, onSubm
 
           {has('budget') ? (
             <div className="rounded-3xl border border-slate-200 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-slate-500">Budget</p>
-                <span className="text-sm font-semibold text-ink">${budgetValue}</span>
+              <p className="text-sm font-semibold text-slate-500">Budget Level</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {BUDGET_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => updateAnswer('budget', preset)}
+                    className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                      answers.budget === preset ? 'bg-lagoon text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
               </div>
-              <input
-                type="range"
-                min="100"
-                max="10000"
-                step="100"
-                value={budgetValue}
-                onChange={(event) => updateAnswer('budget', event.target.value)}
-                className="mt-4 w-full accent-[#0f766e]"
-              />
-              <input
-                type="number"
-                min="100"
-                step="100"
-                value={budgetValue}
-                onChange={(event) => updateAnswer('budget', event.target.value)}
-                className="mt-3 w-full rounded-2xl border border-slate-200 px-3 py-3 text-sm text-ink outline-none focus:border-lagoon"
-              />
             </div>
           ) : null}
         </div>

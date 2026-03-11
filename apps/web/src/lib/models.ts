@@ -132,6 +132,20 @@ export interface TripResponse {
   trip: TripState;
 }
 
+export interface TripSummary {
+  trip_id: string;
+  query: string;
+  headline: string;
+  destination: string;
+  view_state: ViewState;
+  updated_at: string;
+  created_at: string;
+}
+
+export interface TripListResponse {
+  trips: TripSummary[];
+}
+
 export interface ModelConfigRequest {
   model_id: ModelId;
   api_key: string | null;

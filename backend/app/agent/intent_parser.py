@@ -65,12 +65,12 @@ def parse_intent(query: str) -> dict[str, str | int | None]:
     amount_match = re.search(r"(?:budget\s*(?:is|around|of)?\s*|\$)\s*(\d+[\d,]*)", lowered)
     if amount_match:
         budget = f"${amount_match.group(1).replace(',', '')}"
-    elif "mid-range" in lowered or "midrange" in lowered:
-        budget = "mid-range"
-    elif "budget" in lowered:
-        budget = "budget"
-    elif "luxury" in lowered:
-        budget = "luxury"
+    elif "balanced" in lowered or "balance" in lowered or "mid-range" in lowered or "midrange" in lowered:
+        budget = "balanced"
+    elif "low" in lowered or "budget" in lowered:
+        budget = "low"
+    elif "high" in lowered or "luxury" in lowered:
+        budget = "high"
 
     style = None
     style_label_match = re.search(r"(?:preference|style)\s*:\s*([^\n]+)", query, re.IGNORECASE)

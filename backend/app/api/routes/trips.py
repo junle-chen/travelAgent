@@ -10,7 +10,7 @@ from app.db.sqlite import Database
 from app.models.client import ModelApiClient, ModelApiError
 from app.models.credential_resolver import ModelCredentialResolver, ModelResolutionError
 from app.schemas.requests import CreateTripRequest, RegenerateRequest, ReorderRequest, TripMessageRequest
-from app.schemas.responses import TripResponse
+from app.schemas.responses import TripListResponse, TripResponse, TripSummaryResponse
 
 router = APIRouter(prefix="/api/trips", tags=["trips"])
 settings = get_settings()
@@ -51,6 +51,25 @@ def create_trip(payload: CreateTripRequest) -> TripResponse:
         raise HTTPException(status_code=500, detail=f"Trip generation failed: {exc}") from exc
     database.save_trip(trip, normalized_query)
     return TripResponse(trip=trip)
+
+
+@router.get("", response_model=TripListResponse)
+def list_trips(limit: int = 50) -> TripListResponse:
+    trips = database.list_trips(limit=limit)
+    return TripListResponse(
+        trips=[
+            TripSummaryResponse(
+                trip_id=trip.trip_id,
+                query=trip.query,
+                headline=trip.plan_summary.headline,
+                destination=trip.travel_logistics.destination,
+                view_state=trip.view_state,
+                updated_at=trip.updated_at,
+                created_at=trip.created_at,
+            )
+            for trip in trips
+        ]
+    )
 
 
 @router.get("/{trip_id}", response_model=TripResponse)
