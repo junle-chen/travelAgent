@@ -17,6 +17,9 @@ Clarification-first travel planning app with a React frontend and FastAPI backen
   - AMap JS map when browser key is configured
   - SVG fallback map when browser key is missing
 - Trip history persisted in SQLite (`backend/travel_agent.db`)
+- Conversation history query:
+  - each follow-up message is saved as part of trip history
+  - you can query previous conversations and reopen them in UI
 - Planner state persisted in browser local storage
 - Provider and tool mock fallback support via feature flags
 
@@ -70,8 +73,8 @@ Key files:
 - `GET /api/health`: provider and tool health summary
 - `GET /api/models`: supported model list + default model
 - `POST /api/trips`: create a trip
-- `GET /api/trips`: list trips from SQLite
-- `GET /api/trips/{trip_id}`: get one trip
+- `GET /api/trips`: list historical conversations/trips from SQLite
+- `GET /api/trips/{trip_id}`: retrieve one historical conversation/trip
 - `POST /api/trips/{trip_id}/messages`: continue a trip with follow-up input
 - `POST /api/trips/{trip_id}/reorder`: reorder events in a day
 - `POST /api/trips/{trip_id}/regenerate`: regenerate trip content
