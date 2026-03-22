@@ -1,346 +1,216 @@
 # Travel Agent
 
-Interactive travel planning application with:
+Clarification-first travel planning app with a React frontend and FastAPI backend.
 
-- React frontend for query input, model selection, clarification, itinerary display, and per-day route maps
-- FastAPI backend for trip orchestration
-- model-first planning using your existing LLM API endpoint
-- search-augmented itinerary generation using `SerpApi`, `Serper`, and `Amap`
-- optional LangChain prompt composition layer (`langchain-core`) while keeping the existing model transport client
+## Highlights
+
+- Two interaction modes:
+  - `direct`: generate itinerary directly
+  - `planning`: ask clarification questions first, then generate itinerary
+- Model selection in UI (`gpt-5.1-chat`, `gemini-3-flash-preview`, `deepseek-v3.2`)
+- Structured itinerary output:
+  - multi-day timeline
+  - travel logistics card
+  - budget summary
+  - reference links and visual references
+- Day route map:
+  - AMap JS map when browser key is configured
+  - SVG fallback map when browser key is missing
+- Trip history persisted in SQLite (`backend/travel_agent.db`)
+- Planner state persisted in browser local storage
+- Provider and tool mock fallback support via feature flags
 
 ## Demo
+
 ### Front-end input interface
 <img src="images/image.png" width="600" />
 
-It allows users to input their travel needs and then generates travel plans through two modes: 
-- Direct Mode: quickly generates a draft itinerary directly. 
-- Planning Mode: first inquires with the user for more information, and then generates a more reliable travel plan.
-
-It support different models
-- GPT-5.1-chat
-- Gemini-3-flash-preview
-- Deepseek-v3.2
-
-### Backend interface
-#### Overview
+### Backend interface overview
 <img src="images/image-1.png" width="600" />
 
-#### Specific daily plans.
+### Specific daily plans
 <img src="images/image-2.png" width="600" />
 
-- Itineraries for each time period
-- Scenery corresponding to POIs
-
-#### Daily route map.
+### Daily route map
 <img src="images/image-3.png" width="600" />
 
-#### Budget and memory.
+### Budget and memory
 <img src="images/image-4.png" width="600" />
 
-#### Supplementary search results
+### Supplementary search results
 <img src="images/image-5.png" width="600" />
 
-- Hotel information
-- POI information
-
-#### Other VISUALS
+### Other visuals
 <img src="images/image-6.png" width="600" />
 
-- Other POI pictures
-
-### MOre travel blog links
+### Travel blog links
 <img src="images/image-7.png" width="600" />
 
+### history conversation
+<img src="images/image-8.png" width="600" />
+
 ### Static HTML Export
-You can view a pre-generated interactive travel plan here: [Travel Agent Demo](./images/Travel%20Agent.html) (Download and open in browser)
+Pre-generated demo file: [Travel Agent Demo](./images/Travel%20Agent.html)
 
-## What This Project Does
+## Project Structure
 
-The app accepts a free-form travel request such as:
+- `apps/web`: React + Vite frontend
+- `backend`: FastAPI backend, orchestration, tools, SQLite persistence
 
-- `2 People, plan a 3-day Beijing trip from Shanghai, focus on famous landmarks`
+Key files:
 
-The backend then:
+- `apps/web/src/pages/TripPlannerPage.tsx`
+- `apps/web/src/components/ItineraryWorkspace.tsx`
+- `backend/app/main.py`
+- `backend/app/api/routes/trips.py`
+- `backend/app/agent/orchestrator.py`
 
-1. extracts structured constraints from the free-form request
-2. gathers search and map context from external tools
-3. generates an initial itinerary draft with the selected LLM
-4. refines the draft with search-grounded context in a second LLM pass
-5. enriches the result with:
-   - transport timing hints
-   - hotel candidates
-   - POI candidates
-   - image lookup for major POIs and notable food stops
-   - per-day route coordinates and an interactive route panel
-6. emits backend logs for each major planning stage so you can inspect:
-   - request received
-   - extraction complete
-   - search complete
-   - draft/refine status
-   - final itinerary readiness
+## Backend API
 
-The frontend preserves the current UI style:
+- `GET /api/health`: provider and tool health summary
+- `GET /api/models`: supported model list + default model
+- `POST /api/trips`: create a trip
+- `GET /api/trips`: list trips from SQLite
+- `GET /api/trips/{trip_id}`: get one trip
+- `POST /api/trips/{trip_id}/messages`: continue a trip with follow-up input
+- `POST /api/trips/{trip_id}/reorder`: reorder events in a day
+- `POST /api/trips/{trip_id}/regenerate`: regenerate trip content
 
-- long ChatGPT-style input box
-- model switcher
-- direct / planning mode
-- planning mode supports `Tab` to cycle demo trip briefs for quick demos
-- structured itinerary timeline
-- side panels for budget, memory, visuals, and references
+## Planning Flow (Current Code)
 
-## Architecture
+1. Parse user intent from free-form query
+2. If needed, generate clarification questions (`planning` mode)
+3. Build draft itinerary with selected model
+4. Enrich itinerary using tool context and heuristics
+5. Build route points and map data
+6. Persist trip to SQLite
 
-### Frontend
+## Model & Tool Providers
 
-Path: `apps/web`
+### Models
 
-Main responsibilities:
-
-- collect user query and selected model
-- submit to FastAPI
-- render clarification form when needed
-- render timeline, logistics, references, and route map when itinerary is ready
-
-Key components:
-
-- [TripPlannerPage.tsx](./apps/web/src/pages/TripPlannerPage.tsx)
-- [HeroComposer.tsx](./apps/web/src/components/HeroComposer.tsx)
-- [Timeline.tsx](./apps/web/src/components/Timeline.tsx)
-- [DayRouteMap.tsx](./apps/web/src/components/DayRouteMap.tsx)
-
-### Backend
-
-Path: `backend`
-
-Main responsibilities:
-
-- resolve model credentials from `.env`
-- call the selected LLM using the existing compatible chat-completions client
-- collect grounding context from tools
-- generate and refine itinerary data
-- persist trips in SQLite
-
-Key modules:
-
-- [main.py](./backend/app/main.py)
-- [trips.py](./backend/app/api/routes/trips.py)
-- [orchestrator.py](./backend/app/agent/orchestrator.py)
-- [client.py](./backend/app/models/client.py)
-
-## Planning Flow
-
-The current planning flow is:
-
-1. user enters a free-form query
-2. backend parses the request heuristically
-3. backend asks the selected model to extract normalized constraints
-4. backend gathers tool context:
-   - `Amap` for hotels, restaurants, POIs, and walking directions
-   - `SerpApi` as the primary search engine
-   - `Serper` as fallback search/image support
-5. backend runs a draft LLM pass
-6. backend runs a refinement LLM pass with search-grounded context
-7. backend hydrates:
-   - hotel
-   - POIs
-   - route timing
-   - images
-   - day route coordinates
-8. frontend renders the final result
-
-## Tooling
-
-### LLM
-
-The backend keeps the existing transport layer:
-
-- `POST {BASE_URL}/v1/chat/completions`
-
-Supported models:
+Configured via OpenAI-compatible style endpoints:
 
 - `gpt-5.1-chat`
 - `gemini-3-flash-preview`
 - `deepseek-v3.2`
 
-### LangChain
+Backend resolver supports:
 
-LangChain is used as a lightweight prompt-composition layer:
+- request-level override (`model_config.api_key`, `model_config.base_url`)
+- env-based credentials
+- mock fallback when enabled
 
-- `langchain-core`
-- `langchain`
-- `langsmith`
+### Tools in current runtime path
 
-Current use:
-
-- prompt rendering via [langchain_bridge.py](./backend/app/agent/langchain_bridge.py)
-
-This keeps the existing model client intact while making prompt wiring easier to extend into a fuller tool-calling graph later.
-
-### Search and Travel Tools
-
-- `SerpApi`
-  - primary search for attractions, food, images, and transport snippets
-- `Serper`
-  - fallback search and image support
-- `Amap`
-  - POI lookup
-  - geocoding
-  - walking route geometry
+- `amap_mcp` / AMap services: POI lookup, geocode, route and travel-time estimation
+- `serper_search`: web search + image search + flight/hotel snippets
+- `tavily_search`: web search support
+- `visual_search`: local visual fallback mode
 
 ## Environment Configuration
 
-All backend secrets live in:
+### Backend env
 
-- `backend/.env`
+Copy from template:
 
-Template:
+- `backend/.env.example` -> `backend/.env`
 
-- [backend/.env.example](./backend/.env.example)
+Important variables:
 
-### Required variables
+- App:
+  - `APP_ENV`
+  - `APP_HOST`
+  - `APP_PORT`
+  - `ENABLE_MOCK_MODEL_FALLBACK`
+  - `ENABLE_MOCK_TOOL_FALLBACK`
+- Models:
+  - `GPT_5_1_CHAT_API_KEY`
+  - `GPT_5_1_CHAT_BASE_URL`
+  - `GEMINI_3_FLASH_PREVIEW_API_KEY`
+  - `GEMINI_3_FLASH_PREVIEW_BASE_URL`
+  - `DEEPSEEK_V3_2_API_KEY`
+  - `DEEPSEEK_V3_2_BASE_URL`
+- Tools:
+  - `AMAP_API_KEY`
+  - `AMAP_MAPS_API_KEY`
+  - `SERPER_API_KEY`
+  - `TAVILY_API_KEY`
+- Optional / legacy:
+  - `LANGCHAIN_API_KEY`
 
-#### Models
+### Frontend env
 
-- `GPT_5_1_CHAT_API_KEY`
-- `GPT_5_1_CHAT_BASE_URL`
-- `GEMINI_3_FLASH_PREVIEW_API_KEY`
-- `GEMINI_3_FLASH_PREVIEW_BASE_URL`
-- `DEEPSEEK_V3_2_API_KEY`
-- `DEEPSEEK_V3_2_BASE_URL`
+Copy from template:
 
-#### Search and travel tools
-
-- `AMAP_API_KEY`
-- `AMAP_MAPS_API_KEY`
-- `SERPER_API_KEY`
-- `SERPAPI_API_KEY`
-
-#### Optional
-
-- `LANGCHAIN_API_KEY`
-- `TAVILY_API_KEY`
-
-### Frontend map configuration
-
-To enable the real interactive Amap base map in the browser, configure:
-
-- `apps/web/.env`
-
-Template:
-
-- [apps/web/.env.example](./apps/web/.env.example)
+- `apps/web/.env.example` -> `apps/web/.env`
 
 Variables:
 
-- `VITE_API_BASE_URL`
-- `VITE_AMAP_KEY` (your browser JS AMap key)
-- `VITE_AMAP_SECURITY_JS_CODE` (your AMap JS security code)
+- `VITE_API_BASE_URL` (default backend URL is `http://localhost:8000`)
+- `VITE_AMAP_KEY` (browser JS key)
+- `VITE_AMAP_SECURITY_JS_CODE` (AMap security code)
 
-Important:
+## Install
 
-- `VITE_AMAP_KEY` and `VITE_AMAP_SECURITY_JS_CODE` are different values
-- if you set the same string for both, the frontend ignores the security code and logs a warning in the browser console
+### 1) Install frontend dependencies
 
-#### Feature flags
+```bash
+pnpm install
+```
 
-- `ENABLE_MOCK_MODEL_FALLBACK`
-- `ENABLE_MOCK_TOOL_FALLBACK`
-
-## Installation
-
-### Backend
+### 2) Install backend dependencies
 
 ```bash
 cd backend
 uv sync
 ```
 
-### Frontend
-
-```bash
-cd .
-pnpm install
-```
-
-## Running Locally
+## Run Locally
 
 ### Start backend
+
+From repo root:
+
+```bash
+pnpm dev:backend
+```
+
+Or directly:
 
 ```bash
 cd backend
 uv run uvicorn app.main:app --reload
 ```
 
-Backend default URL:
-
-- `http://127.0.0.1:8000`
-
-Backend logs:
-
-- the planner now logs each major stage at `INFO`
-- watch the backend terminal to inspect:
-  - request parsing
-  - extracted constraints
-  - prompt payloads
-  - model raw responses
-  - tool invocations
-  - geocode success/failures
-  - fallback decisions
+Backend default URL: `http://127.0.0.1:8000`
 
 ### Start frontend
 
+From repo root:
+
 ```bash
-cd .
 pnpm dev:web
 ```
 
-Frontend default URL:
+Frontend default URL: `http://localhost:5173`
 
-- `http://localhost:5173`
+## Quick Usage
 
-## How To Test
+Try prompts like:
 
-Try these example prompts:
+- `Plan a 4-day trip to Beijing from Shanghai`
+- `Plan a 10-day trip to North Xinjiang`
+- `Plan a 6-day trip to Chengdu and Chongqing from Shenzhen`
 
-- `Plan a 3-day Beijing trip from Shanghai, focus on famous landmarks and skip routine meals`
-- `Plan a 2-day Shenzhen trip from Shanghai`
-- `We are 2 friends leaving from Shenzhen, want a food-focused Xiamen weekend, budget around 2200`
+UI shortcuts:
 
-Expected behavior:
+- `Enter`: submit
+- `Shift + Enter`: newline
+- `Tab`: cycle demo planning prompts
 
-- `direct` mode returns an itinerary immediately
-- `planning` mode asks for a structured brief first, then generates the itinerary
+## Notes
 
-## Route Maps
-
-Each day can include a route panel generated from Amap route geometry:
-
-- route points are derived from event coordinates
-- Amap walking directions are used when coordinate pairs are available
-- the frontend renders a real Amap JS map when `VITE_AMAP_KEY` is present
-- if no browser Amap key is configured, the UI falls back to the lightweight SVG route panel
-- if only one marker appears, the backend likely could not geocode enough events for that day; check backend logs for search/geocode details
-- if the map canvas is blank but markers appear, verify:
-  - your frontend Amap key is valid for browser JS usage
-  - your JS security code is correct
-  - `VITE_AMAP_SECURITY_JS_CODE` is not just a copy of `VITE_AMAP_KEY`
-
-This keeps a working fallback while still supporting a real interactive map in environments where a frontend Amap key is available.
-
-## Performance Notes
-
-The backend now reduces blocking latency by:
-
-- caching SerpApi and Serper search responses
-- caching image lookups
-- caching Amap POI lookups
-- batching geocode lookups in parallel
-- batching route construction per day in parallel
-- reusing Amap/search results from the `search` stage in `enrich`
-
-If the response still feels slow, the remaining dominant cost is usually:
-
-- external search engine latency
-- image search latency
-- the selected LLM response time
-
+- Backend logs are at `INFO` level and include planner/tool stages.
+- Tool and image requests are cached in `backend/tool_cache.sqlite3`.
+- If map JS key is missing or invalid, frontend automatically falls back to SVG route rendering.
